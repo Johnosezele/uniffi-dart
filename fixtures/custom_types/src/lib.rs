@@ -1,7 +1,30 @@
-// use uniffi;
+use uniffi;
 // use url::Url;
 
-// pub struct Handle(pub i64);
+// Simple custom type for testing UniFFI 0.29 custom types
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handle(pub i64);
+
+// Use the new custom_type! macro for UniFFI 0.29
+uniffi::custom_type!(Handle, i64);
+
+impl From<i64> for Handle {
+    fn from(val: i64) -> Self {
+        Handle(val)
+    }
+}
+
+impl From<Handle> for i64 {
+    fn from(obj: Handle) -> i64 {
+        obj.0
+    }
+}
+
+impl std::fmt::Display for Handle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Handle({})", self.0)
+    }
+}
 
 // pub struct TimeIntervalMs(pub i64);
 
@@ -81,24 +104,16 @@
 //     }
 // }
 
-// #[derive(uniffi::Record)]
-// pub struct CustomTypesDemo {
-//     url: Url,
-//     handle: Handle,
-//     time_interval_ms: TimeIntervalMs,
-//     time_interval_sec_dbl: TimeIntervalSecDbl,
-//     time_interval_sec_flt: TimeIntervalSecFlt,
-// }
+// Record struct (no derive macro - let UDL handle it)
+pub struct CustomTypesDemo {
+    pub handle: Handle,
+}
 
-// #[uniffi::export]
-// pub fn get_custom_types_demo(v: Option<CustomTypesDemo>) -> CustomTypesDemo {
-//     v.unwrap_or_else(|| CustomTypesDemo {
-//         url: Url::parse("http://example.com/").unwrap(),
-//         handle: Handle(123),
-//         time_interval_ms: TimeIntervalMs(456000),
-//         time_interval_sec_dbl: TimeIntervalSecDbl(456.0),
-//         time_interval_sec_flt: TimeIntervalSecFlt(777.0),
-//     })
-// }
+// Function (no export macro - let UDL handle it) 
+pub fn get_custom_types_demo(v: Option<CustomTypesDemo>) -> CustomTypesDemo {
+    v.unwrap_or_else(|| CustomTypesDemo {
+        handle: Handle(123),
+    })
+}
 
-// uniffi::include_scaffolding!("api");
+uniffi::include_scaffolding!("api");

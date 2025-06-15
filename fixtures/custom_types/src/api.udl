@@ -13,4 +13,10 @@ typedef f64 TimeIntervalSecDbl;
 [Custom]
 typedef f32 TimeIntervalSecFlt;
 
-namespace custom_types { };
+namespace custom_types {
+    CustomTypesDemo get_custom_types_demo(CustomTypesDemo? v);
+};
+
+dictionary CustomTypesDemo {
+    Handle handle;
+};
