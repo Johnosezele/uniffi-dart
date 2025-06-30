@@ -86,6 +86,16 @@ impl<'a> DartWrapper<'a> {
         }
     }
 
+    pub fn initialization_fns(&self) -> Vec<String> {
+        let init_fns = self
+            .ci
+            .iter_local_types()
+            .map(|t| DartCodeOracle::find(t))
+            .filter_map(|ct| ct.initialization_fn());
+
+        init_fns.collect()
+    }
+
     fn generate(&self) -> dart::Tokens {
         let package_name = self.config.package_name();
         let libname = self.config.cdylib_name();
@@ -193,6 +203,7 @@ impl<'a> DartWrapper<'a> {
 
             void initialize() {
                 _UniffiLib._open();
+                $(for f in self.initialization_fns() => $f();$['\r'])
             }
 
             void ensureInitialized() {

@@ -42,6 +42,12 @@ impl CodeType for ObjectCodeType {
             ObjectImpl::Trait => todo!("trait objects not supported"),
         }
     }
+
+    fn initialization_fn(&self) -> Option<String> {
+        self.imp
+            .has_callback_interface()
+            .then(|| format!("init{}VTable", self.id))
+    }
 }
 
 impl Renderable for ObjectCodeType {
