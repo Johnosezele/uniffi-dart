@@ -201,7 +201,12 @@ impl<'a> DartWrapper<'a> {
                 }
             }
 
+            bool _globalInitialized = false;
+
             void initialize() {
+                if (_globalInitialized) return;
+                _globalInitialized = true;
+                
                 _UniffiLib._open();
                 $(for f in self.initialization_fns() => $f();$['\r'])
             }
