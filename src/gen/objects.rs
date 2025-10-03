@@ -9,7 +9,7 @@ use crate::gen::CodeType;
 use heck::ToLowerCamelCase;
 use std::string::ToString;
 use uniffi_bindgen::backend::Literal;
-use uniffi_bindgen::interface::{AsType, Method, Object, ObjectImpl};
+use uniffi_bindgen::interface::{AsType, Method, Object, ObjectImpl, UniffiTrait};
 
 use crate::gen::oracle::{AsCodeType, DartCodeOracle};
 use crate::gen::render::AsRenderable;
@@ -46,7 +46,7 @@ impl CodeType for ObjectCodeType {
         match self.imp {
             ObjectImpl::Struct => self.canonical_name().to_string(), // Objects will use factory methods
             ObjectImpl::CallbackTrait => format!("FfiConverterCallbackInterface{}", self.id),
-            ObjectImpl::Trait => todo!("trait objects not supported"),
+            ObjectImpl::Trait => self.canonical_name().to_string(),
         }
     }
 }
@@ -88,9 +88,13 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
             $functions
             $vtable_init
         );
+    } else if obj.is_trait_interface() {
+        return generate_trait_object(obj, type_helper);
     }
 
     let cls_name = &DartCodeOracle::class_name(obj.name());
+    let interface_name = DartCodeOracle::object_interface_name(type_helper.get_ci(), obj);
+    let interface_definition = generate_object_interface(obj, &interface_name, type_helper);
     let finalizer_cls_name = &format!("{cls_name}Finalizer");
     let lib_instance = &DartCodeOracle::find_lib_instance();
     let ffi_object_free_name = obj.ffi_object_free().name();
@@ -171,32 +175,58 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
         quote!()
     };
 
-    let implements_exception = if is_error_interface {
-        quote!( implements Exception)
-    } else {
+    let mut implements: Vec<String> = Vec::new();
+    if !obj.is_trait_interface() {
+        implements.push(interface_name.clone());
+    }
+    if is_error_interface && !implements.iter().any(|entry| entry == "Exception") {
+        implements.push("Exception".to_string());
+    }
+
+    for trait_impl in obj.trait_impls() {
+        let trait_iface =
+            DartCodeOracle::trait_interface_name(type_helper.get_ci(), &trait_impl.trait_name);
+        if !implements.contains(&trait_iface) {
+            implements.push(trait_iface);
+        }
+    }
+
+    let implements_clause = if implements.is_empty() {
         quote!()
+    } else {
+        quote!( implements $(for imp in implements.iter() join (, ) => $(imp)))
     };
 
     // Generate toString() method for error interfaces
-    let to_string_method: dart::Tokens = if is_error_interface && !obj.is_trait_interface() {
-        // Only generate toString for regular error interfaces, skip trait interfaces for now
-        let dart_class_name = format!("\"{cls_name}\"");
-        quote! {
-            @override
-            String toString() {
-                return $(&dart_class_name);
+    let has_display_trait = obj
+        .uniffi_traits()
+        .iter()
+        .any(|t| matches!(t, UniffiTrait::Display { .. }));
+
+    let to_string_method: dart::Tokens =
+        if is_error_interface && !obj.is_trait_interface() && !has_display_trait {
+            // Only generate toString for regular error interfaces, skip trait interfaces for now
+            let dart_class_name = format!("\"{cls_name}\"");
+            quote! {
+                @override
+                String toString() {
+                    return $(&dart_class_name);
+                }
             }
-        }
-    } else {
-        quote!()
-    };
+        } else {
+            quote!()
+        };
+
+    let trait_methods = generate_trait_helpers(obj, type_helper);
 
     quote! {
+        $interface_definition
+
         final _$finalizer_cls_name = Finalizer<Pointer<Void>>((ptr) {
           rustCall((status) => $lib_instance.$ffi_object_free_name(ptr, status));
         });
 
-        class $cls_name $implements_exception {
+        class $cls_name $implements_clause {
             late final Pointer<Void> _ptr;
 
             // Private constructor for internal use / lift
@@ -243,6 +273,7 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
             }
 
             $to_string_method
+            $trait_methods
 
             $(for mt in &obj.methods() => $(generate_method(mt, type_helper)))
         }
@@ -314,5 +345,276 @@ pub fn generate_method(func: &Method, type_helper: &dyn TypeHelperRenderer) -> d
                 )), $error_handler);
             }
         )
+    }
+}
+
+fn generate_trait_helpers(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> dart::Tokens {
+    let mut tokens = quote!();
+    let mut generated_display = false;
+    let mut generated_debug = false;
+    let mut generated_eq = false;
+    let mut generated_hash = false;
+
+    for trait_impl in obj.uniffi_traits() {
+        match trait_impl {
+            UniffiTrait::Display { fmt } => {
+                if generated_display {
+                    continue;
+                }
+                let call = trait_method_call(fmt, type_helper, &[]);
+                tokens.append(quote! {
+                    @override
+                    String toString() {
+                        return $call;
+                    }
+                });
+                generated_display = true;
+            }
+            UniffiTrait::Debug { fmt } => {
+                if generated_debug {
+                    continue;
+                }
+                let call = trait_method_call(fmt, type_helper, &[]);
+                tokens.append(quote! {
+                    String debugString() {
+                        return $call;
+                    }
+                });
+                generated_debug = true;
+            }
+            UniffiTrait::Eq { eq, .. } => {
+                if generated_eq {
+                    continue;
+                }
+                let call = trait_method_call(eq, type_helper, &[quote!(other)]);
+                tokens.append(quote! {
+                    @override
+                    bool operator ==(Object other) {
+                        if (identical(this, other)) {
+                            return true;
+                        }
+                        if (other is! $(DartCodeOracle::class_name(obj.name()))) {
+                            return false;
+                        }
+                        return $call;
+                    }
+                });
+                generated_eq = true;
+            }
+            UniffiTrait::Hash { hash } => {
+                if generated_hash {
+                    continue;
+                }
+                let call = trait_method_call(hash, type_helper, &[]);
+                tokens.append(quote! {
+                    @override
+                    int get hashCode {
+                        return $call;
+                    }
+                });
+                generated_hash = true;
+            }
+        }
+    }
+
+    tokens
+}
+
+fn trait_method_call(
+    method: &Method,
+    type_helper: &dyn TypeHelperRenderer,
+    arg_exprs: &[dart::Tokens],
+) -> dart::Tokens {
+    assert_eq!(method.arguments().len(), arg_exprs.len());
+
+    let lib_instance = DartCodeOracle::find_lib_instance();
+    let ffi_name = method.ffi_func().name();
+
+    let error_handler = if let Some(error_type) = method.throws_type() {
+        let error_name = DartCodeOracle::class_name(error_type.name().unwrap_or("UnknownError"));
+        let handler_name = format!("{}ErrorHandler", error_name.to_lower_camel_case());
+        quote!($(handler_name))
+    } else {
+        quote!(null)
+    };
+
+    let mut lowered_args = Vec::new();
+    for (arg, expr) in method.arguments().into_iter().zip(arg_exprs.iter()) {
+        type_helper.include_once_check(&arg.as_codetype().canonical_name(), &arg.as_type());
+        lowered_args.push(DartCodeOracle::type_lower_fn(&arg.as_type(), expr.clone()));
+    }
+
+    if let Some(ret) = method.return_type() {
+        type_helper.include_once_check(&ret.as_codetype().canonical_name(), ret);
+        let lifter = quote!($(ret.as_codetype().lift()));
+        quote!(
+            rustCall((status) => $lifter($lib_instance.$ffi_name(
+                uniffiClonePointer(),
+                $(for arg in lowered_args => $arg,)
+                status
+            )), $error_handler)
+        )
+    } else {
+        quote!(
+            rustCall((status) {
+                $lib_instance.$ffi_name(
+                    uniffiClonePointer(),
+                    $(for arg in lowered_args => $arg,)
+                    status
+                );
+            }, $error_handler)
+        )
+    }
+}
+
+fn generate_trait_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> dart::Tokens {
+    type_helper.include_once_check(obj.name(), &obj.as_type());
+
+    let cls_name = &DartCodeOracle::class_name(obj.name());
+    let impl_name = format!("_{cls_name}Impl");
+    let finalizer_field = format!("_{cls_name}ImplFinalizer");
+    let lib_instance = &DartCodeOracle::find_lib_instance();
+    let ffi_object_free_name = obj.ffi_object_free().name();
+    let ffi_object_clone_name = obj.ffi_object_clone().name();
+
+    let abstract_methods = obj
+        .methods()
+        .into_iter()
+        .map(|method| generate_interface_method(method, type_helper));
+
+    let concrete_methods = obj
+        .methods()
+        .into_iter()
+        .map(|method| generate_method(method, type_helper));
+
+    quote! {
+        abstract class $cls_name {
+            factory $cls_name.lift(Pointer<Void> ptr) => $(&impl_name)._internal(ptr);
+
+            static Pointer<Void> lower($cls_name value) {
+                if (value is $(&impl_name)) {
+                    return value.uniffiClonePointer();
+                }
+                throw UnsupportedError("Only Rust-implemented $cls_name values are supported.");
+            }
+
+            static int allocationSize($cls_name value) {
+                if (value is $(&impl_name)) {
+                    return $(&impl_name).allocationSize(value);
+                }
+                throw UnsupportedError("Only Rust-implemented $cls_name values are supported.");
+            }
+
+            static LiftRetVal<$cls_name> read(Uint8List buf) {
+                final handle = buf.buffer.asByteData(buf.offsetInBytes).getInt64(0);
+                final pointer = Pointer<Void>.fromAddress(handle);
+                return LiftRetVal($cls_name.lift(pointer), 8);
+            }
+
+            static int write($cls_name value, Uint8List buf) {
+                final handle = lower(value);
+                buf.buffer.asByteData(buf.offsetInBytes).setInt64(0, handle.address);
+                return 8;
+            }
+
+            void dispose();
+
+            $(for method in abstract_methods => $method)
+        }
+
+        final class $(&impl_name) implements $cls_name {
+            $(&impl_name)._internal(this._ptr) {
+                $(&finalizer_field).attach(this, _ptr, detach: this);
+            }
+
+            static final Finalizer<Pointer<Void>> $(&finalizer_field) =
+                Finalizer<Pointer<Void>>((ptr) {
+                    rustCall((status) => $lib_instance.$ffi_object_free_name(ptr, status));
+                });
+
+            Pointer<Void> _ptr;
+
+            static int allocationSize($(&impl_name) _) => 8;
+
+            Pointer<Void> uniffiClonePointer() {
+                return rustCall((status) => $lib_instance.$ffi_object_clone_name(_ptr, status));
+            }
+
+            @override
+            void dispose() {
+                $(&finalizer_field).detach(this);
+                rustCall((status) => $lib_instance.$ffi_object_free_name(_ptr, status));
+            }
+
+            $(for method in concrete_methods => $method)
+        }
+    }
+}
+
+fn generate_object_interface(
+    obj: &Object,
+    interface_name: &str,
+    type_helper: &dyn TypeHelperRenderer,
+) -> dart::Tokens {
+    let method_tokens: Vec<dart::Tokens> = obj
+        .methods()
+        .into_iter()
+        .map(|method| generate_interface_method(method, type_helper))
+        .collect();
+
+    if method_tokens.is_empty() {
+        quote! {
+            abstract class $(interface_name) {}
+        }
+    } else {
+        quote! {
+            abstract class $(interface_name) {
+                $(for method in method_tokens => $method)
+            }
+        }
+    }
+}
+
+fn generate_interface_method(
+    method: &Method,
+    type_helper: &dyn TypeHelperRenderer,
+) -> dart::Tokens {
+    let arg_tokens: Vec<dart::Tokens> = method
+        .arguments()
+        .into_iter()
+        .map(|arg| {
+            let ty = arg.as_renderable().render_type(&arg.as_type(), type_helper);
+            let name = DartCodeOracle::var_name(arg.name());
+            quote!($ty $name)
+        })
+        .collect();
+
+    let params = if arg_tokens.is_empty() {
+        quote!()
+    } else {
+        quote!($(for arg in arg_tokens.iter() join (, ) => $arg))
+    };
+    let ret_type = method_return_type_tokens(method, type_helper);
+    let method_name = DartCodeOracle::fn_name(method.name());
+
+    quote!(
+        $ret_type $method_name($params);
+    )
+}
+
+fn method_return_type_tokens(
+    method: &Method,
+    type_helper: &dyn TypeHelperRenderer,
+) -> dart::Tokens {
+    let base = if let Some(ret) = method.return_type() {
+        ret.as_renderable().render_type(ret, type_helper)
+    } else {
+        quote!(void)
+    };
+
+    if method.is_async() {
+        quote!(Future<$base>)
+    } else {
+        base
     }
 }

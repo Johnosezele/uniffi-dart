@@ -70,6 +70,8 @@ members = [
     "fixtures/simple-iface",
     "fixtures/streams_ext",
     "fixtures/simple-fns",
+    "fixtures/trait-methods",
+    "fixtures/trait-interfaces",
     #"fixtures/*",
 ]
 
