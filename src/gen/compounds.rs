@@ -45,15 +45,24 @@ macro_rules! impl_renderable_for_compound {
                 fn render_type_helper(&self, type_helper: &dyn TypeHelperRenderer) -> dart::Tokens {
                     type_helper.include_once_check(&self.ffi_converter_name(), &self.self_type);
                     let inner_codetype = DartCodeOracle::find(self.inner());
-                    let inner_type_label = inner_codetype.type_label();
+                    let inner_type_label = inner_codetype.type_label().replace("Error", "Exception");
 
                     type_helper.include_once_check(&inner_codetype.canonical_name(), &self.inner()); // Add the Inner FFI Converter
 
-                    let cl_name = &format!($canonical_name_pattern, &inner_codetype.canonical_name());
-                    let type_label = &format!($type_label_pattern, &inner_type_label);
+                    let inner_canonical_name = inner_codetype.canonical_name().replace("Error", "Exception");
+                    let cl_name_buf = format!($canonical_name_pattern, &inner_canonical_name);
+                    let cl_name = &cl_name_buf;
+                    let type_label_buf = format!($type_label_pattern, &inner_type_label);
+                    let type_label = &type_label_buf;
 
-                    let inner_cl_converter_name = &inner_codetype.ffi_converter_name();
-                    let inner_data_type = &inner_codetype.canonical_name().replace("UInt", "Uint").replace("Double", "Float");
+                    let inner_cl_converter_name_buf = inner_codetype.ffi_converter_name().replace("Error", "Exception");
+                    let inner_cl_converter_name = &inner_cl_converter_name_buf;
+                    let inner_data_type_buf = inner_codetype
+                        .canonical_name()
+                        .replace("Error", "Exception")
+                        .replace("UInt", "Uint")
+                        .replace("Double", "Float");
+                    let inner_data_type = &inner_data_type_buf;
                     let _inner_type_signature = if inner_data_type.contains("Float") { "double" } else { "int" };
 
 
@@ -122,15 +131,23 @@ macro_rules! impl_renderable_for_compound {
 
                     type_helper.include_once_check(&self.ffi_converter_name(), &self.self_type);
                     let inner_codetype = self.inner().as_codetype();
-                    let inner_type_label = inner_codetype.type_label();
+                    let inner_type_label = inner_codetype.type_label().replace("Error", "Exception");
 
                     type_helper.include_once_check(&inner_codetype.canonical_name(), &self.inner()); // Add the Inner FFI Converter
 
-                    let cl_name = &format!($canonical_name_pattern, &inner_codetype.canonical_name());
-                    let type_label = &format!("List<{}>", &inner_type_label);
+                    let inner_canonical_name = inner_codetype.canonical_name().replace("Error", "Exception");
+                    let cl_name_buf = format!($canonical_name_pattern, &inner_canonical_name);
+                    let cl_name = &cl_name_buf;
+                    let type_label_buf = format!("List<{}>", &inner_type_label);
+                    let type_label = &type_label_buf;
 
-                    let inner_cl_converter_name = &inner_codetype.ffi_converter_name();
-                    let inner_data_type = &inner_codetype.canonical_name().replace("UInt", "Uint").replace("Double", "Float");
+                    let inner_cl_converter_name_buf = inner_codetype.ffi_converter_name().replace("Error", "Exception");
+                    let inner_cl_converter_name = &inner_cl_converter_name_buf;
+                    let inner_data_type = inner_codetype
+                        .canonical_name()
+                        .replace("Error", "Exception")
+                        .replace("UInt", "Uint")
+                        .replace("Double", "Float");
                     let _inner_type_signature = if inner_data_type.contains("Float") { "double" } else { "int" };
 
 
