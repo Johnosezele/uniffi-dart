@@ -239,6 +239,7 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
             }
 
             T rustCall<T>(T Function(Pointer<RustCallStatus>) callback, [UniffiRustCallStatusErrorHandler? errorHandler]) {
+                UniffiMemoryProfiler.incrementRustCalls();
                 final status = _RustCallStatusPool.acquire();
                 try {
                     final result = callback(status);
@@ -319,6 +320,86 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 }
             }
 
+            // Memory profiling and monitoring utilities
+            class UniffiMemoryProfiler {
+                static bool _enabled = false;
+                static int _rustCallCount = 0;
+                static int _bufferAllocations = 0;
+                static int _bufferPoolHits = 0;
+                static int _bufferPoolMisses = 0;
+                static int _handleMapInserts = 0;
+                static int _handleMapRemoves = 0;
+                static int _stringCacheHits = 0;
+                static int _stringCacheMisses = 0;
+                
+                static void enable() => _enabled = true;
+                static void disable() => _enabled = false;
+                static bool get isEnabled => _enabled;
+                
+                static void incrementRustCalls() {
+                    if (_enabled) _rustCallCount++;
+                }
+                
+                static void incrementBufferAllocations() {
+                    if (_enabled) _bufferAllocations++;
+                }
+                
+                static void incrementBufferPoolHits() {
+                    if (_enabled) _bufferPoolHits++;
+                }
+                
+                static void incrementBufferPoolMisses() {
+                    if (_enabled) _bufferPoolMisses++;
+                }
+                
+                static void incrementHandleMapInserts() {
+                    if (_enabled) _handleMapInserts++;
+                }
+                
+                static void incrementHandleMapRemoves() {
+                    if (_enabled) _handleMapRemoves++;
+                }
+                
+                static void incrementStringCacheHits() {
+                    if (_enabled) _stringCacheHits++;
+                }
+                
+                static void incrementStringCacheMisses() {
+                    if (_enabled) _stringCacheMisses++;
+                }
+                
+                static Map<String, dynamic> getStats() {
+                    return {
+                        "enabled": _enabled,
+                        "rust_calls": _rustCallCount,
+                        "buffer_allocations": _bufferAllocations,
+                        "buffer_pool_hits": _bufferPoolHits,
+                        "buffer_pool_misses": _bufferPoolMisses,
+                        "buffer_pool_hit_rate": _bufferPoolHits + _bufferPoolMisses > 0 
+                            ? _bufferPoolHits / (_bufferPoolHits + _bufferPoolMisses) 
+                            : 0.0,
+                        "handle_map_inserts": _handleMapInserts,
+                        "handle_map_removes": _handleMapRemoves,
+                        "string_cache_hits": _stringCacheHits,
+                        "string_cache_misses": _stringCacheMisses,
+                        "string_cache_hit_rate": _stringCacheHits + _stringCacheMisses > 0
+                            ? _stringCacheHits / (_stringCacheHits + _stringCacheMisses)
+                            : 0.0,
+                    };
+                }
+                
+                static void reset() {
+                    _rustCallCount = 0;
+                    _bufferAllocations = 0;
+                    _bufferPoolHits = 0;
+                    _bufferPoolMisses = 0;
+                    _handleMapInserts = 0;
+                    _handleMapRemoves = 0;
+                    _stringCacheHits = 0;
+                    _stringCacheMisses = 0;
+                }
+            }
+
             // Buffer pool for frequently used buffer sizes to reduce allocation overhead
             class _BufferPool {
                 static const List<int> _poolSizes = [64, 256, 1024, 4096, 16384];
@@ -337,10 +418,13 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                     if (poolSize != null) {
                         final pool = _pools[poolSize] ??= <Pointer<Uint8>>[];
                         if (pool.isNotEmpty) {
+                            UniffiMemoryProfiler.incrementBufferPoolHits();
                             return pool.removeLast();
                         }
                     }
                     
+                    UniffiMemoryProfiler.incrementBufferPoolMisses();
+                    UniffiMemoryProfiler.incrementBufferAllocations();
                     return calloc<Uint8>(size);
                 }
                 
@@ -530,6 +614,7 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                     _strongRefs[handle] = obj; 
                     
                     _finalizer.attach(obj, handle, detach: obj);
+                    UniffiMemoryProfiler.incrementHandleMapInserts();
                     return handle;
                 }
 
@@ -563,6 +648,7 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                     if (obj != null) {
                         _finalizer.detach(obj);
                     }
+                    UniffiMemoryProfiler.incrementHandleMapRemoves();
                 }
             }
 

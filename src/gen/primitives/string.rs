@@ -26,15 +26,23 @@ impl Renderable for StringCodeType {
                 static Uint8List _getCachedUtf8(String value) {
                     if (value.isEmpty) return _emptyUtf8;
                     if (value.length > 256) {
+                        UniffiMemoryProfiler.incrementStringCacheMisses();
                         return utf8.encoder.convert(value);
                     }
                     
-                    return _utf8Cache.putIfAbsent(value, () {
-                        if (_utf8Cache.length >= _maxCacheSize) {
-                            _utf8Cache.clear();
-                        }
-                        return utf8.encoder.convert(value);
-                    });
+                    if (_utf8Cache.containsKey(value)) {
+                        UniffiMemoryProfiler.incrementStringCacheHits();
+                        return _utf8Cache[value]!;
+                    }
+                    
+                    UniffiMemoryProfiler.incrementStringCacheMisses();
+                    final encoded = utf8.encoder.convert(value);
+                    
+                    if (_utf8Cache.length >= _maxCacheSize) {
+                        _utf8Cache.clear();
+                    }
+                    _utf8Cache[value] = encoded;
+                    return encoded;
                 }
 
                 static String lift( RustBuffer buf) {
