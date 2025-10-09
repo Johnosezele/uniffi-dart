@@ -325,8 +325,6 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 static bool _enabled = false;
                 static int _rustCallCount = 0;
                 static int _bufferAllocations = 0;
-                static int _bufferPoolHits = 0;
-                static int _bufferPoolMisses = 0;
                 static int _handleMapInserts = 0;
                 static int _handleMapRemoves = 0;
                 static int _stringCacheHits = 0;
@@ -342,14 +340,6 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 
                 static void incrementBufferAllocations() {
                     if (_enabled) _bufferAllocations++;
-                }
-                
-                static void incrementBufferPoolHits() {
-                    if (_enabled) _bufferPoolHits++;
-                }
-                
-                static void incrementBufferPoolMisses() {
-                    if (_enabled) _bufferPoolMisses++;
                 }
                 
                 static void incrementHandleMapInserts() {
@@ -373,11 +363,6 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                         "enabled": _enabled,
                         "rust_calls": _rustCallCount,
                         "buffer_allocations": _bufferAllocations,
-                        "buffer_pool_hits": _bufferPoolHits,
-                        "buffer_pool_misses": _bufferPoolMisses,
-                        "buffer_pool_hit_rate": _bufferPoolHits + _bufferPoolMisses > 0 
-                            ? _bufferPoolHits / (_bufferPoolHits + _bufferPoolMisses) 
-                            : 0.0,
                         "handle_map_inserts": _handleMapInserts,
                         "handle_map_removes": _handleMapRemoves,
                         "string_cache_hits": _stringCacheHits,
@@ -391,8 +376,6 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 static void reset() {
                     _rustCallCount = 0;
                     _bufferAllocations = 0;
-                    _bufferPoolHits = 0;
-                    _bufferPoolMisses = 0;
                     _handleMapInserts = 0;
                     _handleMapRemoves = 0;
                     _stringCacheHits = 0;
@@ -400,65 +383,16 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 }
             }
 
-            // Buffer pool for frequently used buffer sizes to reduce allocation overhead
-            class _BufferPool {
-                static const List<int> _poolSizes = [64, 256, 1024, 4096, 16384];
-                static const int _maxPoolsPerSize = 4; 
-                static final Map<int, List<Pointer<Uint8>>> _pools = {};
-                
-                static Pointer<Uint8> acquire(int size) {
-                    int? poolSize;
-                    for (final ps in _poolSizes) {
-                        if (ps >= size) {
-                            poolSize = ps;
-                            break;
-                        }
-                    }
-                    
-                    if (poolSize != null) {
-                        final pool = _pools[poolSize] ??= <Pointer<Uint8>>[];
-                        if (pool.isNotEmpty) {
-                            UniffiMemoryProfiler.incrementBufferPoolHits();
-                            return pool.removeLast();
-                        }
-                    }
-                    
-                    UniffiMemoryProfiler.incrementBufferPoolMisses();
-                    UniffiMemoryProfiler.incrementBufferAllocations();
-                    return calloc<Uint8>(size);
-                }
-                
-                static void release(Pointer<Uint8> ptr, int size) {
-                    int? poolSize;
-                    for (final ps in _poolSizes) {
-                        if (ps >= size) {
-                            poolSize = ps;
-                            break;
-                        }
-                    }
-                    
-                    if (poolSize != null) {
-                        final pool = _pools[poolSize] ??= <Pointer<Uint8>>[];
-                        if (pool.length < _maxPoolsPerSize) {
-                            pool.add(ptr);
-                            return;
-                        }
-                    }
-                    
-                    calloc.free(ptr);
-                }
-            }
-
             RustBuffer toRustBuffer(Uint8List data) {
                 final length = data.length;
 
-                final Pointer<Uint8> frameData = _BufferPool.acquire(length);
+                final Pointer<Uint8> frameData = calloc<Uint8>(length);
                 
                 if (length > 0) {
                     final pointerList = frameData.asTypedList(length);
-                    if (length >= 64) {
+                    if (length >= 1024) {
                         var offset = 0;
-                        const chunkSize = 1024; 
+                        const chunkSize = 4096; 
                         while (offset < length) {
                             final end = (offset + chunkSize < length) ? offset + chunkSize : length;
                             final chunk = data.sublist(offset, end);

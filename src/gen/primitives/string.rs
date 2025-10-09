@@ -19,6 +19,7 @@ impl Renderable for StringCodeType {
         quote! {
             class FfiConverterString {
                 static final Map<String, Uint8List> _utf8Cache = {};
+                static final List<String> _cacheKeys = [];  
                 static const int _maxCacheSize = 128; 
                 
                 static final Uint8List _emptyUtf8 = Uint8List(0);
@@ -39,9 +40,12 @@ impl Renderable for StringCodeType {
                     final encoded = utf8.encoder.convert(value);
                     
                     if (_utf8Cache.length >= _maxCacheSize) {
-                        _utf8Cache.clear();
+                        final oldestKey = _cacheKeys.removeAt(0);
+                        _utf8Cache.remove(oldestKey);
                     }
+                    
                     _utf8Cache[value] = encoded;
+                    _cacheKeys.add(value);
                     return encoded;
                 }
 
