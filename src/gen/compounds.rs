@@ -47,11 +47,14 @@ macro_rules! impl_renderable_for_compound {
                     let inner_codetype = DartCodeOracle::find(self.inner());
                     let inner_type_label = inner_codetype.type_label().replace("Error", "Exception");
 
-                    if !type_helper.include_once_check(&inner_codetype.canonical_name(), &self.inner()) {
-                        let renamed = inner_codetype
-                            .canonical_name()
-                            .replace("Error", "Exception");
-                        type_helper.include_once_check(&renamed, &self.inner());
+                    let original_canonical = inner_codetype.canonical_name();
+                    let mut inner_included =
+                        type_helper.include_once_check(&original_canonical, &self.inner());
+                    if !inner_included {
+                        let renamed = original_canonical.replace("Error", "Exception");
+                        if renamed != original_canonical {
+                            inner_included = type_helper.include_once_check(&renamed, &self.inner());
+                        }
                     }
 
                     let inner_canonical_name = inner_codetype
@@ -73,7 +76,7 @@ macro_rules! impl_renderable_for_compound {
                     let _inner_type_signature = if inner_data_type.contains("Float") { "double" } else { "int" };
 
 
-                    let inner_helper = if matches!(self.inner(), Type::Sequence { .. }) {
+                    let inner_helper = if matches!(self.inner(), Type::Sequence { .. }) && !inner_included {
                         self.inner().as_renderable().render_type_helper(type_helper)
                     } else {
                         quote!()
