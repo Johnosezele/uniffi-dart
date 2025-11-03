@@ -95,6 +95,7 @@ impl_renderable_for_primitive!(UInt32CodeType, "int", "UInt32", 4, 0, 4294967295
 impl_renderable_for_primitive!(Float32CodeType, "double", "Double32", 4);
 impl_renderable_for_primitive!(Float64CodeType, "double", "Double64", 8);
 
+// Keep u64 on the legacy int path for now; full upper-bound validation lands with BigInt support.
 impl Renderable for UInt64CodeType {
     fn render_type_helper(&self, _type_helper: &dyn TypeHelperRenderer) -> dart::Tokens {
         let cl_name = &self.ffi_converter_name();
