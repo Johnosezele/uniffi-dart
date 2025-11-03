@@ -72,7 +72,6 @@ impl Renderable for CallbackInterfaceCodeType {
         let vtable_init = generate_callback_interface_vtable_init_function(
             callback.name(),
             &callback.methods(),
-            namespace,
             &ffi_module,
         );
 
@@ -316,7 +315,6 @@ pub fn generate_callback_functions(
 pub fn generate_callback_interface_vtable_init_function(
     callback_name: &str,
     methods: &[&Method],
-    _namespace: &str,
     ffi_module: &str,
 ) -> dart::Tokens {
     let vtable_name = &format!("UniffiVTableCallbackInterface{callback_name}");

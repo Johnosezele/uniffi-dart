@@ -94,10 +94,6 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
         let vtable_init = generate_callback_interface_vtable_init_function(
             obj.name(),
             &obj.methods(),
-            type_helper
-                .get_ci()
-                .namespace_for_type(&obj.as_type())
-                .expect("object should have namespace"),
             &ffi_module,
         );
         return quote!(
