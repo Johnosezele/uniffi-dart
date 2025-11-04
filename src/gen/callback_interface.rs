@@ -57,11 +57,13 @@ impl Renderable for CallbackInterfaceCodeType {
         let namespace = type_helper
             .get_ci()
             .namespace_for_type(&callback.as_type())
-            .unwrap_or_else(|_| type_helper.get_ci().namespace());
+            .unwrap_or_else(|_| type_helper.get_ci().namespace())
+            .to_string();
+        let ffi_module = DartCodeOracle::infer_ffi_module(type_helper.get_ci(), move || namespace);
         let vtable_init = generate_callback_interface_vtable_init_function(
             callback.name(),
             &callback.methods(),
-            namespace,
+            &ffi_module,
         );
 
         quote! {
@@ -96,13 +98,14 @@ pub fn generate_callback_interface(
             static final _handleMap = UniffiHandleMap<$cls_name>();
             static bool _vtableInitialized = false;
 
-            static $cls_name lift(int handle) {
-                return _handleMap.get(handle);
+            static $cls_name lift(Pointer<Void> handle) {
+                return _handleMap.get(handle.address);
             }
 
-            static int lower($cls_name value) {
+            static Pointer<Void> lower($cls_name value) {
                 _ensureVTableInitialized();
-                return _handleMap.insert(value);
+                final handle = _handleMap.insert(value);
+                return Pointer<Void>.fromAddress(handle);
             }
 
             static void _ensureVTableInitialized() {
@@ -114,12 +117,13 @@ pub fn generate_callback_interface(
 
             static LiftRetVal<$cls_name> read(Uint8List buf) {
                 final handle = buf.buffer.asByteData(buf.offsetInBytes).getInt64(0);
-                return LiftRetVal(lift(handle), 8);
+                final pointer = Pointer<Void>.fromAddress(handle);
+                return LiftRetVal(lift(pointer), 8);
             }
 
             static int write($cls_name value, Uint8List buf) {
                 final handle = lower(value);
-                buf.buffer.asByteData(buf.offsetInBytes).setInt64(0, handle);
+                buf.buffer.asByteData(buf.offsetInBytes).setInt64(0, handle.address);
                 return 8;
             }
 
@@ -302,12 +306,13 @@ pub fn generate_callback_functions(
 pub fn generate_callback_interface_vtable_init_function(
     callback_name: &str,
     methods: &[&Method],
-    namespace: &str,
+    ffi_module: &str,
 ) -> dart::Tokens {
     let vtable_name = &format!("UniffiVTableCallbackInterface{callback_name}");
     let vtable_static_instance_name =
         format!("{}{}", DartCodeOracle::fn_name(callback_name), "VTable");
     let init_fn_name = &format!("init{callback_name}VTable");
+    let snake_callback = callback_name.to_lowercase();
 
     quote! {
         late final Pointer<$vtable_name> $(&vtable_static_instance_name);
@@ -325,7 +330,7 @@ pub fn generate_callback_interface_vtable_init_function(
             $(&vtable_static_instance_name).ref.uniffiFree = $(format!("{}FreePointer", DartCodeOracle::fn_name(callback_name)));
 
             rustCall((status) {
-                _UniffiLib.instance.uniffi_$(namespace)_fn_init_callback_vtable_$(callback_name.to_lowercase())(
+                _UniffiLib.instance.uniffi_$(ffi_module)_fn_init_callback_vtable_$(snake_callback)(
                     $(vtable_static_instance_name),
                 );
                 checkCallStatus(NullRustCallStatusErrorHandler(), status);
