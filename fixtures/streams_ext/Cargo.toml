@@ -17,7 +17,7 @@ uniffi_dart_macro = { path = "../../uniffi_dart_macro" }
 lazy_static = "1.4.0"
 futures = "0.3"
 async-stream = "0.3"
-tokio = { version = "1.0", features = ["full"] }
+async-std = { version = "1.12", features = ["attributes"] }
 thiserror = "1.0.66"
 
 [build-dependencies]

@@ -1,8 +1,6 @@
 use async_stream::stream;
 use futures::stream::{self, Stream, StreamExt};
-use futures::TryStreamExt;
-use std::pin::Pin;
-use tokio::time::{interval, Duration};
+use std::{pin::Pin, time::Duration};
 
 // // Define custom error enums
 // #[derive(Debug, thiserror::Error)]
@@ -44,10 +42,9 @@ pub fn fibonacci_stream() -> Pin<Box<dyn Stream<Item = u64> + Send>> {
 #[uniffi_dart::export_stream(u64)]
 pub fn async_timer_stream() -> Pin<Box<dyn Stream<Item = u64> + Send>> {
     Box::pin(stream! {
-        let mut interval = interval(Duration::from_secs(1));
         let mut count = 0;
         loop {
-            interval.tick().await;
+            async_std::task::sleep(Duration::from_secs(1)).await;
             count += 1;
             yield count;
         }
@@ -125,18 +122,17 @@ pub fn combined_streams() -> impl Stream<Item = String> + Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_std::{future::timeout, task};
     use futures::stream::StreamExt;
     use std::time::Duration;
-    use tokio::runtime::Runtime;
-    use tokio::time::timeout;
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_simple_stream() {
         let result: Vec<i32> = simple_stream().collect().await;
         assert_eq!(result, vec![0, 1, 2, 3, 4]);
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_count_stream() {
         let result: Vec<i32> = count_stream().collect().await;
         assert_eq!(result, vec![0, 1, 2, 3, 4]);
@@ -148,16 +144,16 @@ mod tests {
     //     assert_eq!(result, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
     // }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_fibonacci_stream() {
         let result: Vec<u64> = fibonacci_stream().take(10).collect().await;
         assert_eq!(result, vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]);
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_async_timer_stream() {
         let mut stream = async_timer_stream();
-        let result = timeout(Duration::from_secs(3), async {
+        let result = timeout(Duration::from_secs(4), async {
             let mut values = Vec::new();
             for _ in 0..3 {
                 if let Some(value) = stream.next().await {
@@ -172,7 +168,7 @@ mod tests {
         assert_eq!(result, vec![1, 2, 3]);
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_combined_streams() {
         let result: Vec<String> = combined_streams().take(10).collect().await;
 
@@ -190,10 +186,9 @@ mod tests {
 
     #[test]
     fn test_poll_next() {
-        let rt = Runtime::new().unwrap();
         let instance = create_stream_count_stream();
 
-        rt.block_on(async {
+        task::block_on(async {
             let mut results = Vec::new();
             for _ in 0..5 {
                 if let Some(value) = instance.next().await {
@@ -205,7 +200,7 @@ mod tests {
         });
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_multiple_streams() {
         let instance1 = create_stream_count_stream();
         let instance2 = create_stream_count_stream();
@@ -225,7 +220,7 @@ mod tests {
         assert_eq!(result4, Some(1));
     }
 
-    #[tokio::test]
+    #[async_std::test]
     async fn test_stream_exhaustion() {
         let instance = create_stream_count_stream();
 
