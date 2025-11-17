@@ -1,5 +1,6 @@
 use async_stream::stream;
 use futures::stream::{self, Stream, StreamExt};
+use smol::Timer;
 use std::{pin::Pin, time::Duration};
 
 // // Define custom error enums
@@ -44,7 +45,7 @@ pub fn async_timer_stream() -> Pin<Box<dyn Stream<Item = u64> + Send>> {
     Box::pin(stream! {
         let mut count = 0;
         loop {
-            async_std::task::sleep(Duration::from_secs(1)).await;
+            Timer::after(Duration::from_secs(1)).await;
             count += 1;
             yield count;
         }
@@ -122,20 +123,23 @@ pub fn combined_streams() -> impl Stream<Item = String> + Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_std::{future::timeout, task};
     use futures::stream::StreamExt;
-    use std::time::Duration;
+    use smol::block_on;
 
-    #[async_std::test]
-    async fn test_simple_stream() {
-        let result: Vec<i32> = simple_stream().collect().await;
-        assert_eq!(result, vec![0, 1, 2, 3, 4]);
+    #[test]
+    fn test_simple_stream() {
+        block_on(async {
+            let result: Vec<i32> = simple_stream().collect().await;
+            assert_eq!(result, vec![0, 1, 2, 3, 4]);
+        });
     }
 
-    #[async_std::test]
-    async fn test_count_stream() {
-        let result: Vec<i32> = count_stream().collect().await;
-        assert_eq!(result, vec![0, 1, 2, 3, 4]);
+    #[test]
+    fn test_count_stream() {
+        block_on(async {
+            let result: Vec<i32> = count_stream().collect().await;
+            assert_eq!(result, vec![0, 1, 2, 3, 4]);
+        });
     }
 
     // #[tokio::test]
@@ -144,51 +148,51 @@ mod tests {
     //     assert_eq!(result, "ABCDEFGHIJKLMNOPQRSTUVWXYZ");
     // }
 
-    #[async_std::test]
-    async fn test_fibonacci_stream() {
-        let result: Vec<u64> = fibonacci_stream().take(10).collect().await;
-        assert_eq!(result, vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]);
+    #[test]
+    fn test_fibonacci_stream() {
+        block_on(async {
+            let result: Vec<u64> = fibonacci_stream().take(10).collect().await;
+            assert_eq!(result, vec![0, 1, 1, 2, 3, 5, 8, 13, 21, 34]);
+        });
     }
 
-    #[async_std::test]
-    async fn test_async_timer_stream() {
-        let mut stream = async_timer_stream();
-        let result = timeout(Duration::from_secs(4), async {
+    #[test]
+    fn test_async_timer_stream() {
+        block_on(async {
+            let mut stream = async_timer_stream();
             let mut values = Vec::new();
             for _ in 0..3 {
                 if let Some(value) = stream.next().await {
                     values.push(value);
                 }
             }
-            values
-        })
-        .await
-        .expect("Timeout occurred");
-
-        assert_eq!(result, vec![1, 2, 3]);
+            assert_eq!(values, vec![1, 2, 3]);
+        });
     }
 
-    #[async_std::test]
-    async fn test_combined_streams() {
-        let result: Vec<String> = combined_streams().take(10).collect().await;
+    #[test]
+    fn test_combined_streams() {
+        block_on(async {
+            let result: Vec<String> = combined_streams().take(10).collect().await;
 
-        // Check if we have the correct number of items
-        assert_eq!(result.len(), 10);
+            // Check if we have the correct number of items
+            assert_eq!(result.len(), 10);
 
-        // Check if we have items from all three streams
-        assert!(result.iter().any(|s| s.starts_with("Count:")));
-        assert!(result.iter().any(|s| s.starts_with("Fibonacci:")));
+            // Check if we have items from all three streams
+            assert!(result.iter().any(|s| s.starts_with("Count:")));
+            assert!(result.iter().any(|s| s.starts_with("Fibonacci:")));
 
-        // Check specific items
-        assert!(result.contains(&"Count: 0".to_string()));
-        assert!(result.contains(&"Fibonacci: 3".to_string()));
+            // Check specific items
+            assert!(result.contains(&"Count: 0".to_string()));
+            assert!(result.contains(&"Fibonacci: 3".to_string()));
+        });
     }
 
     #[test]
     fn test_poll_next() {
         let instance = create_stream_count_stream();
 
-        task::block_on(async {
+        block_on(async {
             let mut results = Vec::new();
             for _ in 0..5 {
                 if let Some(value) = instance.next().await {
@@ -200,37 +204,41 @@ mod tests {
         });
     }
 
-    #[async_std::test]
-    async fn test_multiple_streams() {
-        let instance1 = create_stream_count_stream();
-        let instance2 = create_stream_count_stream();
+    #[test]
+    fn test_multiple_streams() {
+        block_on(async {
+            let instance1 = create_stream_count_stream();
+            let instance2 = create_stream_count_stream();
 
-        let result1 = instance1.next().await;
-        let result2 = instance2.next().await;
+            let result1 = instance1.next().await;
+            let result2 = instance2.next().await;
 
-        // Both instances should return the first item (0)
-        assert_eq!(result1, Some(0));
-        assert_eq!(result2, Some(0));
+            // Both instances should return the first item (0)
+            assert_eq!(result1, Some(0));
+            assert_eq!(result2, Some(0));
 
-        // The next call should return the second item (1) for both instances
-        let result3 = instance1.next().await;
-        let result4 = instance2.next().await;
+            // The next call should return the second item (1) for both instances
+            let result3 = instance1.next().await;
+            let result4 = instance2.next().await;
 
-        assert_eq!(result3, Some(1));
-        assert_eq!(result4, Some(1));
+            assert_eq!(result3, Some(1));
+            assert_eq!(result4, Some(1));
+        });
     }
 
-    #[async_std::test]
-    async fn test_stream_exhaustion() {
-        let instance = create_stream_count_stream();
+    #[test]
+    fn test_stream_exhaustion() {
+        block_on(async {
+            let instance = create_stream_count_stream();
 
-        // Consume all items
-        for _ in 0..5 {
-            print!("{:?}", instance.next().await);
-        }
+            // Consume all items
+            for _ in 0..5 {
+                print!("{:?}", instance.next().await);
+            }
 
-        // The next call should return None
-        assert_eq!(instance.next().await, None);
+            // The next call should return None
+            assert_eq!(instance.next().await, None);
+        });
     }
 
     // #[tokio::test]
