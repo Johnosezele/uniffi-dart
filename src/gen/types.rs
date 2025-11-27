@@ -373,6 +373,8 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
 
             typedef UniffiRustFutureContinuationCallback = Void Function(Uint64, Int8);
 
+            final _uniffiRustFutureContinuationHandles = UniffiHandleMap<Completer<int>>();
+
             Future<T> uniffiRustCallAsync<T, F>(
                 Pointer<Void> Function() rustFutureFunc,
                 void Function(Pointer<Void>, Pointer<NativeFunction<UniffiRustFutureContinuationCallback>>, Pointer<Void>) pollFunc,
@@ -383,43 +385,92 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
             ]) async {
                 final rustFuture = rustFutureFunc();
                 final completer = Completer<int>();
+                final handle = _uniffiRustFutureContinuationHandles.insert(completer);
+                final callbackData = Pointer<Void>.fromAddress(handle);
 
                 late final NativeCallable<UniffiRustFutureContinuationCallback> callback;
 
-                void poll() {
+                void repoll() {
                     pollFunc(
                         rustFuture,
                         callback.nativeFunction,
-                        Pointer<Void>.fromAddress(0),
+                        callbackData,
                     );
                 }
-                void onResponse(int _idx, int pollResult) {
+
+                void onResponse(int data, int pollResult) {
                     if (pollResult == UNIFFI_RUST_FUTURE_POLL_READY) {
-                        completer.complete(pollResult);
+                        final readyCompleter =
+                            _uniffiRustFutureContinuationHandles.maybeRemove(data);
+                        if (readyCompleter != null && !readyCompleter.isCompleted) {
+                            readyCompleter.complete(pollResult);
+                        }
+                    } else if (pollResult == UNIFFI_RUST_FUTURE_POLL_MAYBE_READY) {
+                        repoll();
                     } else {
-                        poll();
+                        final errorCompleter =
+                            _uniffiRustFutureContinuationHandles.maybeRemove(data);
+                        if (errorCompleter != null && !errorCompleter.isCompleted) {
+                            errorCompleter.completeError(
+                                UniffiInternalError.panicked(
+                                    "Unexpected poll result from Rust future: $pollResult",
+                                ),
+                            );
+                        }
                     }
                 }
-                callback = NativeCallable<UniffiRustFutureContinuationCallback>.listener(onResponse);
+
+                callback = NativeCallable<UniffiRustFutureContinuationCallback>.listener(
+                  onResponse,
+                );
 
                 try {
-                    poll();
+                    repoll();
                     await completer.future;
-                    callback.close();
-
 
                     final status = calloc<RustCallStatus>();
                     try {
-
                         final result = completeFunc(rustFuture, status);
-
+                        checkCallStatus(
+                            errorHandler ?? NullRustCallStatusErrorHandler(),
+                            status,
+                        );
                         return liftFunc(result);
                     } finally {
                         calloc.free(status);
                     }
                 } finally {
+                    callback.close();
+                    _uniffiRustFutureContinuationHandles.maybeRemove(handle);
                     freeFunc(rustFuture);
                 }
+            }
+
+            typedef UniffiForeignFutureFree = Void Function(Uint64);
+            typedef UniffiForeignFutureFreeDart = void Function(int);
+
+            class _UniffiForeignFutureState {
+                bool cancelled = false;
+            }
+
+            final _uniffiForeignFutureHandleMap = UniffiHandleMap<_UniffiForeignFutureState>();
+
+            void _uniffiForeignFutureFree(int handle) {
+                final state = _uniffiForeignFutureHandleMap.maybeRemove(handle);
+                if (state != null) {
+                    state.cancelled = true;
+                }
+            }
+
+            final Pointer<NativeFunction<UniffiForeignFutureFree>>
+                _uniffiForeignFutureFreePointer =
+                    Pointer.fromFunction<UniffiForeignFutureFree>(_uniffiForeignFutureFree);
+
+            final class UniffiForeignFuture extends Struct {
+                @Uint64()
+                external int handle;
+
+                external Pointer<NativeFunction<UniffiForeignFutureFree>> free;
             }
 
             // As of uniffi 0.30, foreign handles must always have the lowest bit set
@@ -445,10 +496,14 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 }
 
                 void remove(int handle) {
-                if (_map.remove(handle) == null) {
+                if (maybeRemove(handle) == null) {
                     throw UniffiInternalError(
                         UniffiInternalError.unexpectedStaleHandle, "Handle not found");
                 }
+                }
+
+                T? maybeRemove(int handle) {
+                return _map.remove(handle);
                 }
             }
 
