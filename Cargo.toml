@@ -71,6 +71,7 @@ members = [
     "fixtures/simple-fns",
     "fixtures/trait-methods",
     "fixtures/trait-interfaces",
+    "fixtures/dart_async",
     #"fixtures/*",
 ]
 

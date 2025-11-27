@@ -13,7 +13,7 @@ void main() {
   ensureInitialized();
 
   test('greet', () async {
-    final result = await greet("Somebody");
+    final result = greet("Somebody");
     expect(result, "Hello, Somebody");
   });
 
@@ -28,8 +28,7 @@ void main() {
 
   test('void', () async {
     final time = await measureTime(() async {
-      await voidFunction();
-      //expect(result, null);
+      await void_();
     });
     // Less than or equal to time
     expect(time.inMilliseconds <= 10, true);
@@ -78,7 +77,7 @@ void main() {
   test('fallible_function_and_method', () async {
     final time1 = await measureTime(() async {
       try {
-        fallibleMe(false);
+        await fallibleMe(false);
         expect(true, true);
       } catch (exception) {
         expect(false, true); // should never be reached
@@ -88,7 +87,7 @@ void main() {
 
     final time2 = await measureTime(() async {
       try {
-        fallibleMe(true);
+        await fallibleMe(true);
         expect(false, true); // should never be reached
       } catch (exception) {
         expect(true, true);
@@ -121,7 +120,7 @@ void main() {
 
   test('udl_async_function', () async {
     final time = await measureTime(() async {
-      final result = await udlAlwaysReady();
+      final result = await alwaysReady();
       expect(result, true);
     });
     expect(time.inMilliseconds < 100, true);
@@ -129,7 +128,7 @@ void main() {
 
   test('proc_macro_megaphone_async_constructor', () async {
     final time = await measureTime(() async {
-      final megaphone = await Megaphone();
+      final megaphone = await Megaphone.new_();
       expect(megaphone, isNotNull);
     });
     expect(time.inMilliseconds < 100, true);
@@ -144,7 +143,7 @@ void main() {
   });
 
   test('proc_macro_megaphone_async_methods', () async {
-    final megaphone = await Megaphone();
+    final megaphone = await Megaphone.new_();
 
     // Test async method with timing
     final time = await measureTime(() async {
@@ -158,14 +157,11 @@ void main() {
       final result = await megaphone.silence();
       expect(result, '');
     });
-    expect(
-      silenceTime.inMilliseconds >= 100 && silenceTime.inMilliseconds < 200,
-      true,
-    );
+    expect(silenceTime.inMilliseconds < 50, true);
   });
 
   test('proc_macro_megaphone_sync_method', () async {
-    final megaphone = await Megaphone();
+    final megaphone = await Megaphone.new_();
 
     // Test sync method (should be immediate)
     final time = await measureTime(() async {
@@ -176,7 +172,7 @@ void main() {
   });
 
   test('proc_macro_megaphone_tokio_method', () async {
-    final megaphone = await Megaphone();
+    final megaphone = await Megaphone.new_();
 
     final time = await measureTime(() async {
       final result = await megaphone.sayAfterWithTokio(100, 'Charlie');
@@ -186,7 +182,7 @@ void main() {
   });
 
   test('proc_macro_megaphone_fallible_method', () async {
-    final megaphone = await Megaphone();
+    final megaphone = await Megaphone.new_();
 
     // Test success case
     final result = await megaphone.fallibleMe(false);
@@ -204,7 +200,7 @@ void main() {
   test('udl_megaphone_async_constructors', () async {
     // Test primary constructor
     final time1 = await measureTime(() async {
-      final udlMegaphone = await UdlMegaphone();
+      final udlMegaphone = await UdlMegaphone.new_();
       expect(udlMegaphone, isNotNull);
     });
     expect(time1.inMilliseconds < 100, true);
@@ -218,7 +214,7 @@ void main() {
   });
 
   test('udl_megaphone_async_method', () async {
-    final udlMegaphone = await UdlMegaphone();
+    final udlMegaphone = await UdlMegaphone.new_();
 
     final time = await measureTime(() async {
       final result = await udlMegaphone.sayAfter(100, 'Dave');
@@ -245,7 +241,7 @@ void main() {
   });
 
   test('async_function_with_object_parameter', () async {
-    final megaphone = await Megaphone();
+    final megaphone = await Megaphone.new_();
 
     final time = await measureTime(() async {
       final result = await sayAfterWithMegaphone(megaphone, 100, 'Eve');
@@ -271,7 +267,7 @@ void main() {
   test('fallible_async_constructor', () async {
     // This constructor always fails
     try {
-      await FallibleMegaphone();
+      await FallibleMegaphone.new_();
       expect(false, true); // Should never reach here
     } catch (e) {
       expect(true, true); // Expected to throw

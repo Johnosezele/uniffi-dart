@@ -1,7 +1,7 @@
-namespace dart_async { 
+namespace dart_async {
     // UDL-defined async functions (testing UDL vs proc-macro async support)
     [Async]
-    boolean udl_always_ready();
+    boolean always_ready();
 };
 
 // UDL-defined async trait interface

@@ -1,5 +1,3 @@
-use uniffi;
-
 use std::{
     future::Future,
     pin::Pin,
@@ -8,6 +6,9 @@ use std::{
     thread,
     time::Duration,
 };
+
+use futures::future::{AbortHandle, Abortable, Aborted};
+use once_cell::sync::Lazy;
 
 /// Non-blocking timer future.
 pub struct TimerFuture {
@@ -24,7 +25,6 @@ impl Future for TimerFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut shared_state = self.shared_state.lock().unwrap();
-
         if shared_state.completed {
             Poll::Ready(())
         } else {
@@ -42,14 +42,11 @@ impl TimerFuture {
         }));
 
         let thread_shared_state = shared_state.clone();
-
         // Let's mimic an event coming from somewhere else, like the system.
         thread::spawn(move || {
             thread::sleep(duration);
-
             let mut shared_state: MutexGuard<_> = thread_shared_state.lock().unwrap();
             shared_state.completed = true;
-
             if let Some(waker) = shared_state.waker.take() {
                 waker.wake();
             }
@@ -59,7 +56,7 @@ impl TimerFuture {
     }
 }
 
-/// Non-blocking timer future.
+/// Non-blocking timer future that intentionally misbehaves.
 pub struct BrokenTimerFuture {
     shared_state: Arc<Mutex<SharedState>>,
 }
@@ -69,7 +66,6 @@ impl Future for BrokenTimerFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut shared_state = self.shared_state.lock().unwrap();
-
         if shared_state.completed {
             Poll::Ready(())
         } else {
@@ -87,21 +83,15 @@ impl BrokenTimerFuture {
         }));
 
         let thread_shared_state = shared_state.clone();
-
         // Let's mimic an event coming from somewhere else, like the system.
         thread::spawn(move || {
             thread::sleep(duration);
-
             let mut shared_state: MutexGuard<_> = thread_shared_state.lock().unwrap();
             shared_state.completed = true;
-
             if let Some(waker) = shared_state.waker.take() {
                 // Do not consume `waker`.
                 waker.wake_by_ref();
-
-                // And this is the important part. We are going to call
-                // `wake()` a second time. That's incorrect, but that's on
-                // purpose, to see how foreign languages will react.
+                // And this is the important part. We are going to call `wake()` a second time.
                 if fail_after.is_zero() {
                     waker.wake();
                 } else {
@@ -122,33 +112,35 @@ pub fn greet(who: String) -> String {
     format!("Hello, {who}")
 }
 
-#[uniffi::export]
+/// Async function that is immediately ready. Declared in the UDL to ensure UDL async works.
 pub async fn always_ready() -> bool {
     true
 }
 
 #[uniffi::export]
-pub async fn void_function() {}
+pub async fn void() {}
 
 #[uniffi::export]
 pub async fn say() -> String {
     TimerFuture::new(Duration::from_secs(2)).await;
-
     "Hello, Future!".to_string()
 }
 
 #[uniffi::export]
 pub async fn say_after(ms: u16, who: String) -> String {
     TimerFuture::new(Duration::from_millis(ms.into())).await;
-
     format!("Hello, {who}!")
 }
 
 #[uniffi::export]
 pub async fn sleep(ms: u16) -> bool {
     TimerFuture::new(Duration::from_millis(ms.into())).await;
-
     true
+}
+
+#[uniffi::export]
+pub async fn sleep_no_return(ms: u16) {
+    TimerFuture::new(Duration::from_millis(ms.into())).await;
 }
 
 // Our error.
@@ -168,10 +160,14 @@ pub async fn fallible_me(do_fail: bool) -> Result<u8, MyError> {
     }
 }
 
-#[uniffi::export(async_runtime = "tokio")]
-pub async fn say_after_with_tokio(ms: u16, who: String) -> String {
-    tokio::time::sleep(Duration::from_millis(ms.into())).await;
-    format!("Hello, {who} (with Tokio)!")
+// An async function returning a struct that can throw.
+#[uniffi::export]
+pub async fn fallible_struct(do_fail: bool) -> Result<Arc<Megaphone>, MyError> {
+    if do_fail {
+        Err(MyError::Foo)
+    } else {
+        Ok(new_megaphone())
+    }
 }
 
 #[derive(uniffi::Record)]
@@ -185,6 +181,7 @@ pub async fn new_my_record(a: String, b: u32) -> MyRecord {
     MyRecord { a, b }
 }
 
+/// Non-blocking timer future used to test callback cancellation.
 #[uniffi::export]
 pub async fn broken_sleep(ms: u16, fail_after: u16) {
     BrokenTimerFuture::new(
@@ -194,37 +191,7 @@ pub async fn broken_sleep(ms: u16, fail_after: u16) {
     .await;
 }
 
-// UDL-defined async function
-pub async fn udl_always_ready() -> bool {
-    true
-}
-
-// UDL-defined async trait
-pub trait SayAfterUdlTrait: Send + Sync {
-    async fn say_after(&self, ms: u16, who: String) -> String;
-}
-
-// UDL-defined object with async methods
-pub struct UdlMegaphone;
-
-impl UdlMegaphone {
-    pub async fn new() -> Self {
-        TimerFuture::new(Duration::from_millis(0)).await;
-        UdlMegaphone
-    }
-
-    pub async fn secondary() -> Self {
-        TimerFuture::new(Duration::from_millis(0)).await;
-        UdlMegaphone
-    }
-
-    pub async fn say_after(&self, ms: u16, who: String) -> String {
-        TimerFuture::new(Duration::from_millis(ms.into())).await;
-        format!("Hello, {who} (from UDL Megaphone)!").to_uppercase()
-    }
-}
-
-// Proc-macro-defined object with async methods (Megaphone)
+/// Proc-macro-defined object with async methods (Megaphone)
 #[derive(uniffi::Object)]
 pub struct Megaphone;
 
@@ -246,19 +213,16 @@ impl Megaphone {
 
     /// Async method that yells something after a certain time
     pub async fn say_after(self: Arc<Self>, ms: u16, who: String) -> String {
-        TimerFuture::new(Duration::from_millis(ms.into())).await;
-        format!("Hello, {who}!").to_uppercase()
+        say_after(ms, who).await.to_uppercase()
     }
 
     /// Async method without any extra arguments
     pub async fn silence(&self) -> String {
-        TimerFuture::new(Duration::from_millis(100)).await;
         String::new()
     }
 
     /// Async method that can throw
     pub async fn fallible_me(self: Arc<Self>, do_fail: bool) -> Result<u8, MyError> {
-        TimerFuture::new(Duration::from_millis(10)).await;
         if do_fail {
             Err(MyError::Foo)
         } else {
@@ -267,7 +231,7 @@ impl Megaphone {
     }
 }
 
-// Mixed async/sync methods on the same object (using tokio runtime)
+/// Mixed async/sync methods on the same object (using tokio runtime)
 #[uniffi::export(async_runtime = "tokio")]
 impl Megaphone {
     /// Sync method that yells something immediately
@@ -277,48 +241,46 @@ impl Megaphone {
 
     /// Async method using Tokio's timer
     pub async fn say_after_with_tokio(self: Arc<Self>, ms: u16, who: String) -> String {
-        tokio::time::sleep(Duration::from_millis(ms.into())).await;
-        format!("Hello, {who} (with Tokio)!").to_uppercase()
+        say_after_with_tokio(ms, who).await.to_uppercase()
     }
 }
 
-// Additional async functions that work with objects
+/// Sync function that generates a new `Megaphone`.
 #[uniffi::export]
 pub fn new_megaphone() -> Arc<Megaphone> {
     Arc::new(Megaphone)
 }
 
+/// Async function that generates a new `Megaphone`.
 #[uniffi::export]
 pub async fn async_new_megaphone() -> Arc<Megaphone> {
-    Arc::new(Megaphone)
+    new_megaphone()
 }
 
+/// Async function that possibly generates a new `Megaphone`.
 #[uniffi::export]
-pub async fn async_maybe_new_megaphone(should_create: bool) -> Option<Arc<Megaphone>> {
-    TimerFuture::new(Duration::from_millis(10)).await;
-    if should_create {
-        Some(Arc::new(Megaphone))
+pub async fn async_maybe_new_megaphone(y: bool) -> Option<Arc<Megaphone>> {
+    if y {
+        Some(new_megaphone())
     } else {
         None
     }
 }
 
+/// Async function that inputs `Megaphone`.
 #[uniffi::export]
 pub async fn say_after_with_megaphone(megaphone: Arc<Megaphone>, ms: u16, who: String) -> String {
     megaphone.say_after(ms, who).await
 }
 
-#[uniffi::export]
-pub async fn fallible_struct(do_fail: bool) -> Result<Arc<Megaphone>, MyError> {
-    TimerFuture::new(Duration::from_millis(10)).await;
-    if do_fail {
-        Err(MyError::Foo)
-    } else {
-        Ok(Arc::new(Megaphone))
-    }
+/// Async function that uses tokio runtime.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn say_after_with_tokio(ms: u16, who: String) -> String {
+    tokio::time::sleep(Duration::from_millis(ms.into())).await;
+    format!("Hello, {who} (with Tokio)!")
 }
 
-// Fallible async constructor object
+/// Fallible async constructor object
 #[derive(uniffi::Object)]
 pub struct FallibleMegaphone;
 
@@ -326,9 +288,185 @@ pub struct FallibleMegaphone;
 impl FallibleMegaphone {
     #[uniffi::constructor]
     pub async fn new() -> Result<Arc<Self>, MyError> {
-        TimerFuture::new(Duration::from_millis(10)).await;
-        Err(MyError::Foo) // Always fails for testing
+        Err(MyError::Foo)
     }
+}
+
+/// Async runtime example that uses shared state to test timeouts.
+#[derive(uniffi::Record)]
+pub struct SharedResourceOptions {
+    pub release_after_ms: u16,
+    pub timeout_ms: u16,
+}
+
+// Our error for async resource usage.
+#[derive(thiserror::Error, uniffi::Error, Debug)]
+pub enum AsyncError {
+    #[error("Timeout")]
+    Timeout,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn use_shared_resource(options: SharedResourceOptions) -> Result<(), AsyncError> {
+    use tokio::{
+        sync::Mutex,
+        time::{sleep, timeout},
+    };
+
+    static MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    let _guard = timeout(
+        Duration::from_millis(options.timeout_ms.into()),
+        MUTEX.lock(),
+    )
+    .await
+    .map_err(|_| AsyncError::Timeout)?;
+
+    sleep(Duration::from_millis(options.release_after_ms.into())).await;
+    Ok(())
+}
+
+// Example of a trait with async methods.
+#[uniffi::export]
+#[async_trait::async_trait]
+pub trait SayAfterTrait: Send + Sync {
+    async fn say_after(&self, ms: u16, who: String) -> String;
+}
+
+// Example of async trait defined in the UDL file.
+#[uniffi::trait_interface]
+#[async_trait::async_trait]
+pub trait SayAfterUdlTrait: Send + Sync {
+    async fn say_after(&self, ms: u16, who: String) -> String;
+}
+
+struct SayAfterImpl1;
+struct SayAfterImpl2;
+
+#[async_trait::async_trait]
+impl SayAfterTrait for SayAfterImpl1 {
+    async fn say_after(&self, ms: u16, who: String) -> String {
+        say_after(ms, who).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SayAfterTrait for SayAfterImpl2 {
+    async fn say_after(&self, ms: u16, who: String) -> String {
+        say_after(ms, who).await
+    }
+}
+
+#[uniffi::export]
+pub fn get_say_after_traits() -> Vec<Arc<dyn SayAfterTrait>> {
+    vec![Arc::new(SayAfterImpl1), Arc::new(SayAfterImpl2)]
+}
+
+#[async_trait::async_trait]
+impl SayAfterUdlTrait for SayAfterImpl1 {
+    async fn say_after(&self, ms: u16, who: String) -> String {
+        say_after(ms, who).await
+    }
+}
+
+#[async_trait::async_trait]
+impl SayAfterUdlTrait for SayAfterImpl2 {
+    async fn say_after(&self, ms: u16, who: String) -> String {
+        say_after(ms, who).await
+    }
+}
+
+#[uniffi::export]
+pub fn get_say_after_udl_traits() -> Vec<Arc<dyn SayAfterUdlTrait>> {
+    vec![Arc::new(SayAfterImpl1), Arc::new(SayAfterImpl2)]
+}
+
+/// UDL-defined object with async methods.
+pub struct UdlMegaphone;
+
+impl UdlMegaphone {
+    pub async fn new() -> Self {
+        TimerFuture::new(Duration::from_millis(0)).await;
+        Self {}
+    }
+
+    pub async fn secondary() -> Self {
+        TimerFuture::new(Duration::from_millis(0)).await;
+        Self {}
+    }
+
+    pub async fn say_after(&self, ms: u16, who: String) -> String {
+        TimerFuture::new(Duration::from_millis(ms.into())).await;
+        format!("Hello, {who} (from UDL Megaphone)!").to_uppercase()
+    }
+}
+
+// Async callback interface implemented in foreign code.
+#[uniffi::export(with_foreign)]
+#[async_trait::async_trait]
+pub trait AsyncParser: Send + Sync {
+    // Simple async method
+    async fn as_string(&self, delay_ms: i32, value: i32) -> String;
+    // Async method that can throw
+    async fn try_from_string(&self, delay_ms: i32, value: String) -> Result<i32, ParserError>;
+    // Void return, which requires special handling
+    async fn delay(&self, delay_ms: i32);
+    // Void return that can also throw
+    async fn try_delay(&self, delay_ms: String) -> Result<(), ParserError>;
+}
+
+#[derive(thiserror::Error, uniffi::Error, Debug)]
+pub enum ParserError {
+    #[error("NotAnInt")]
+    NotAnInt,
+    #[error("UnexpectedError")]
+    UnexpectedError,
+}
+
+impl From<uniffi::UnexpectedUniFFICallbackError> for ParserError {
+    fn from(_: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::UnexpectedError
+    }
+}
+
+#[uniffi::export]
+pub async fn as_string_using_trait(obj: Arc<dyn AsyncParser>, delay_ms: i32, value: i32) -> String {
+    obj.as_string(delay_ms, value).await
+}
+
+#[uniffi::export]
+pub async fn try_from_string_using_trait(
+    obj: Arc<dyn AsyncParser>,
+    delay_ms: i32,
+    value: String,
+) -> Result<i32, ParserError> {
+    obj.try_from_string(delay_ms, value).await
+}
+
+#[uniffi::export]
+pub async fn delay_using_trait(obj: Arc<dyn AsyncParser>, delay_ms: i32) {
+    obj.delay(delay_ms).await
+}
+
+#[uniffi::export]
+pub async fn try_delay_using_trait(
+    obj: Arc<dyn AsyncParser>,
+    delay_ms: String,
+) -> Result<(), ParserError> {
+    obj.try_delay(delay_ms).await
+}
+
+#[uniffi::export]
+pub async fn cancel_delay_using_trait(obj: Arc<dyn AsyncParser>, delay_ms: i32) {
+    let (abort_handle, abort_registration) = AbortHandle::new_pair();
+    thread::spawn(move || {
+        // Simulate a different thread aborting the process
+        thread::sleep(Duration::from_millis(1));
+        abort_handle.abort();
+    });
+
+    let future = Abortable::new(obj.delay(delay_ms), abort_registration);
+    assert_eq!(future.await, Err(Aborted));
 }
 
 uniffi::include_scaffolding!("api");
