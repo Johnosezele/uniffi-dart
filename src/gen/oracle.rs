@@ -91,10 +91,6 @@ impl DartCodeOracle {
     //     }
     // }
 
-    pub fn find_lib_instance() -> dart::Tokens {
-        quote!(_UniffiLib.instance)
-    }
-
     pub fn infer_ffi_module<F>(ci: &ComponentInterface, fallback: F) -> String
     where
         F: FnOnce() -> String,
@@ -152,7 +148,6 @@ impl DartCodeOracle {
                 FfiType::UInt64 => quote!(int),
                 FfiType::Float32 => quote!(double),
                 FfiType::Float64 => quote!(double),
-                FfiType::RustArcPtr(_) => quote!(Pointer<Void>),
                 FfiType::RustBuffer(ext) => Self::rust_buffer_name(ext, ci),
                 FfiType::ForeignBytes => quote!(ForeignBytes),
                 FfiType::Handle => quote!(Pointer<Void>),
@@ -181,7 +176,6 @@ impl DartCodeOracle {
                 FfiType::UInt64 => quote!(Uint64),
                 FfiType::Float32 => quote!(Float),
                 FfiType::Float64 => quote!(Double),
-                FfiType::RustArcPtr(_) => quote!(Pointer<Void>),
                 FfiType::RustBuffer(ext) => Self::rust_buffer_name(ext, ci),
                 FfiType::ForeignBytes => quote!(ForeignBytes),
                 FfiType::Handle => quote!(Pointer<Void>),
@@ -206,7 +200,6 @@ impl DartCodeOracle {
             FfiType::UInt64 => quote!(Uint64),
             FfiType::Float32 => quote!(Float),
             FfiType::Float64 => quote!(Double),
-            FfiType::RustArcPtr(_) => quote!(Pointer<Void>),
             FfiType::RustBuffer(_) => quote!(RustBuffer),
             FfiType::Callback(name) => quote!(Pointer<$(Self::ffi_callback_name(name))>),
             FfiType::Struct(name) => quote!(Pointer<$(Self::ffi_struct_name(name))>),
@@ -262,20 +255,22 @@ impl DartCodeOracle {
         }
     }
 
+    /// With @Native, async functions are called directly by name
     pub fn async_poll(callable: impl Callable, ci: &ComponentInterface) -> dart::Tokens {
         let ffi_func = callable.ffi_rust_future_poll(ci);
-        quote!($(Self::find_lib_instance()).$ffi_func)
+        quote!($ffi_func)
     }
 
+    /// With @Native, async functions are called directly by name
     pub fn async_complete(callable: impl Callable, ci: &ComponentInterface) -> dart::Tokens {
         let ffi_func = callable.ffi_rust_future_complete(ci);
-        let call = quote!($(Self::find_lib_instance()).$ffi_func);
-        call
+        quote!($ffi_func)
     }
 
+    /// With @Native, async functions are called directly by name
     pub fn async_free(callable: impl Callable, ci: &ComponentInterface) -> dart::Tokens {
         let ffi_func = callable.ffi_rust_future_free(ci);
-        quote!($(Self::find_lib_instance()).$ffi_func)
+        quote!($ffi_func)
     }
 
     /// Get the idiomatic Dart rendering of a class name based on `Type`.

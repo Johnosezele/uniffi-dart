@@ -222,6 +222,18 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 }
             }
 
+            // New version that separates FFI call from lifting to avoid deserializing garbage on error
+            T rustCallWithLifter<T, F>(F Function(Pointer<RustCallStatus>) ffiCall, T Function(F) lifter, [UniffiRustCallStatusErrorHandler? errorHandler]) {
+                final status = calloc<RustCallStatus>();
+                try {
+                    final rawResult = ffiCall(status);
+                    checkCallStatus(errorHandler ?? NullRustCallStatusErrorHandler(), status);
+                    return lifter(rawResult);
+                } finally {
+                    calloc.free(status);
+                }
+            }
+
             class NullRustCallStatusErrorHandler extends UniffiRustCallStatusErrorHandler {
                 @override
                 Exception lift(RustBuffer errorBuf) {
@@ -244,11 +256,11 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 external Pointer<Uint8> data;
 
                 static RustBuffer alloc(int size) {
-                    return rustCall((status) => $(DartCodeOracle::find_lib_instance()).$(self.ci.ffi_rustbuffer_alloc().name())(size, status));
+                    return rustCall((status) => $(self.ci.ffi_rustbuffer_alloc().name())(size, status));
                 }
 
                 static RustBuffer fromBytes(ForeignBytes bytes) {
-                    return rustCall((status) => $(DartCodeOracle::find_lib_instance()).$(self.ci.ffi_rustbuffer_from_bytes().name())(bytes, status));
+                    return rustCall((status) => $(self.ci.ffi_rustbuffer_from_bytes().name())(bytes, status));
                 }
 
                 // static RustBuffer from(Pointer<Uint8> bytes, int len) {
@@ -257,11 +269,11 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 // }
 
                 void free() {
-                    rustCall((status) => $(DartCodeOracle::find_lib_instance()).$(self.ci.ffi_rustbuffer_free().name())(this, status));
+                    rustCall((status) => $(self.ci.ffi_rustbuffer_free().name())(this, status));
                 }
 
                 RustBuffer reserve(int additionalCapacity) {
-                return rustCall((status) => $(DartCodeOracle::find_lib_instance()).$(self.ci.ffi_rustbuffer_reserve().name())(this, additionalCapacity, status));
+                return rustCall((status) => $(self.ci.ffi_rustbuffer_reserve().name())(this, additionalCapacity, status));
                 }
 
                 Uint8List asUint8List() {
@@ -410,12 +422,15 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
                 }
             }
 
+            // As of uniffi 0.30, foreign handles must always have the lowest bit set
+            // This is achieved here with an odd number sequence.
             class UniffiHandleMap<T> {
                 final Map<int, T> _map = {};
-                int _counter = 0;
+                int _counter = 1;
 
                 int insert(T obj) {
-                final handle = _counter++;
+                final handle = _counter;
+                _counter += 2;
                 _map[handle] = obj;
                 return handle;
                 }
