@@ -444,8 +444,14 @@ impl DartCodeOracle {
                     outReturn.value = result ? 1 : 0;
                 )
             }
-            Type::UInt8 | Type::UInt16 | Type::UInt32 | Type::UInt64 |
-            Type::Int8 | Type::Int16 | Type::Int32 | Type::Int64 => {
+            Type::UInt8
+            | Type::UInt16
+            | Type::UInt32
+            | Type::UInt64
+            | Type::Int8
+            | Type::Int16
+            | Type::Int32
+            | Type::Int64 => {
                 // For primitive integer return values
                 let lowered = ret_type.as_codetype().ffi_converter_name();
                 quote!(
@@ -613,7 +619,8 @@ impl DartCodeOracle {
             Type::Object {
                 imp: ObjectImpl::CallbackTrait,
                 ..
-            } | Type::CallbackInterface { .. } => quote!($base_lower.address),
+            }
+            | Type::CallbackInterface { .. } => quote!($base_lower.address),
             _ => base_lower,
         }
     }
