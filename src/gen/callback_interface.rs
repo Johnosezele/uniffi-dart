@@ -1,7 +1,6 @@
 use crate::gen::CodeType;
 use genco::prelude::*;
 use heck::ToUpperCamelCase;
-use std::collections::BTreeSet;
 use uniffi_bindgen::interface::Type;
 use uniffi_bindgen::interface::{
     ffi::{FfiStruct, FfiType},
@@ -88,8 +87,8 @@ pub fn generate_callback_interface(
     let ffi_conv_name = &DartCodeOracle::class_name(ffi_converter_name);
     let init_fn_name = &format!("init{callback_name}VTable");
 
-    let mut seen_async_structs = BTreeSet::new();
-    let mut seen_async_callbacks = BTreeSet::new();
+    // TODO: Use global deduplication to avoid generating duplicate async types
+    // when multiple async callback interfaces are defined
     let mut async_struct_defs: Vec<dart::Tokens> = Vec::new();
     let mut async_completion_typedefs: Vec<dart::Tokens> = Vec::new();
 
@@ -98,7 +97,7 @@ pub fn generate_callback_interface(
             let struct_def = method.foreign_future_ffi_result_struct();
             let struct_name = struct_def.name().to_string();
 
-            if seen_async_structs.insert(struct_name.clone()) {
+            if !type_helper.include_once_by_name(&struct_name) {
                 async_struct_defs.push(generate_foreign_future_struct_definition(
                     &struct_def,
                     type_helper,
@@ -106,7 +105,7 @@ pub fn generate_callback_interface(
             }
 
             let completion_name = foreign_future_completion_name(method);
-            if seen_async_callbacks.insert(completion_name.clone()) {
+            if !type_helper.include_once_by_name(&completion_name) {
                 async_completion_typedefs.push(generate_foreign_future_completion_typedef(
                     &completion_name,
                     &struct_name,

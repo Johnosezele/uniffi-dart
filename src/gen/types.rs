@@ -1,11 +1,11 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::{cell::RefCell, collections::HashMap};
 
 use genco::prelude::*;
 use uniffi_bindgen::interface::AsType;
 use uniffi_bindgen::{interface::Type, ComponentInterface};
 
-use super::render::{AsRenderable, Renderable, Renderer, TypeHelperRenderer};
+use super::render::{AsRenderable, Renderer, TypeHelperRenderer};
 use super::{enums, functions, objects, oracle::AsCodeType, records};
 use crate::gen::oracle::DartCodeOracle;
 
@@ -14,6 +14,8 @@ type FunctionDefinition = dart::Tokens;
 pub struct TypeHelpersRenderer<'a> {
     ci: &'a ComponentInterface,
     include_once_names: RefCell<HashMap<String, Type>>,
+    // Tracks ad-hoc "include once" names that don't map to a concrete `Type`
+    include_once_custom: RefCell<HashSet<String>>,
 }
 
 impl<'a> TypeHelpersRenderer<'a> {
@@ -21,6 +23,7 @@ impl<'a> TypeHelpersRenderer<'a> {
         Self {
             ci,
             include_once_names: RefCell::new(HashMap::new()),
+            include_once_custom: RefCell::new(HashSet::new()),
         }
     }
 
@@ -43,6 +46,11 @@ impl TypeHelperRenderer for TypeHelpersRenderer<'_> {
         let contains = map.contains_key(&name.to_string());
         drop(map);
         contains
+    }
+
+    fn include_once_by_name(&self, name: &str) -> bool {
+        let mut set = self.include_once_custom.borrow_mut();
+        !set.insert(name.to_string())
     }
 
     fn get_object(&self, name: &str) -> Option<&uniffi_bindgen::interface::Object> {
@@ -102,17 +110,12 @@ impl Renderer<(FunctionDefinition, dart::Tokens)> for TypeHelpersRenderer<'_> {
             )
         );
 
-        let mut callback_code = quote!();
-        // Process all callback interfaces to ensure they're included
+        // Ensure callback interfaces are registered for helper generation
         for callback in self.ci.callback_interface_definitions() {
-            let callback_name = callback.name().to_string();
-            let callback_codetype = super::callback_interface::CallbackInterfaceCodeType::new(
-                callback_name,
-                callback.as_type(),
+            self.include_once_check(
+                &callback.as_type().as_codetype().canonical_name(),
+                &callback.as_type(),
             );
-            // Force the callback interface to be processed, due to the way the code is generated we need to ensure it's processed, when a callback is used in a function signature
-            // TODO: This is a hack to ensure the callback interface is processed, we need to test to ensure there's no chance of duplicates
-            callback_code.append(callback_codetype.render_type_helper(self));
         }
 
         // Let's include the string converter
