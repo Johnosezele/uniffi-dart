@@ -70,7 +70,7 @@ impl DartCodeOracle {
     }
 
     /// Get the idiomatic Dart rendering of an FFI callback function name
-    fn ffi_callback_name(nm: &str) -> String {
+    pub fn ffi_callback_name(nm: &str) -> String {
         format!(
             "Pointer<NativeFunction<{}>>",
             Self::callback_name(&nm.to_upper_camel_case())

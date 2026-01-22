@@ -212,6 +212,12 @@ impl<'a> DartWrapper<'a> {
                 _checkApiVersion();
                 _checkApiChecksums();
             }
+
+            // Backwards-compatible entry point used by existing tests
+            @Deprecated("Use ensureInitialized instead")
+            void initialize() {
+                ensureInitialized();
+            }
         }
     }
 }

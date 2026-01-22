@@ -113,7 +113,10 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
         quote!()
     };
 
-    let constructor_definitions = obj.constructors().into_iter().map(|constructor| {
+    let mut constructor_definitions: Vec<dart::Tokens> = Vec::new();
+    let mut async_constructor_factories: Vec<dart::Tokens> = Vec::new();
+
+    for constructor in obj.constructors() {
         let ffi_func_name = constructor.ffi_func().name();
         let constructor_name = constructor.name();
 
@@ -125,7 +128,8 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
 
         // Check if function can throw errors
         let error_handler = if let Some(error_type) = constructor.throws_type() {
-            let error_name = DartCodeOracle::class_name(error_type.name().unwrap_or("UnknownError"));
+            let error_name =
+                DartCodeOracle::class_name(error_type.name().unwrap_or("UnknownError"));
             // Use the consistent Exception naming for error handlers
             let handler_name = format!("{}ErrorHandler", error_name.to_lower_camel_case());
             quote!($(handler_name))
@@ -146,18 +150,35 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
             type_helper.include_once_check(&arg.as_codetype().canonical_name(), &arg.as_type());
         }
 
-        quote! {
-            // Public constructor
-            $dart_constructor_decl($dart_params) : _ptr = rustCall((status) =>
-                $ffi_func_name(
-                    $ffi_call_args status
-                ),
-                $error_handler
-            ) {
-                 _$finalizer_cls_name.attach(this, _ptr, detach: this);
-            }
+        if constructor.is_async() {
+            async_constructor_factories.push(quote! {
+                static Future<$cls_name> $(DartCodeOracle::fn_name(constructor_name))($dart_params) {
+                    return uniffiRustCallAsync(
+                      () => $ffi_func_name(
+                        $ffi_call_args
+                      ),
+                      $(DartCodeOracle::async_poll(constructor, type_helper.get_ci())),
+                      $(DartCodeOracle::async_complete(constructor, type_helper.get_ci())),
+                      $(DartCodeOracle::async_free(constructor, type_helper.get_ci())),
+                      (int handle) => $cls_name._(Pointer<Void>.fromAddress(handle)),
+                      $error_handler,
+                    );
+                }
+            });
+        } else {
+            constructor_definitions.push(quote! {
+                // Public constructor
+                $dart_constructor_decl($dart_params) : _ptr = rustCall((status) =>
+                    $ffi_func_name(
+                        $ffi_call_args status
+                    ),
+                    $error_handler
+                ) {
+                     _$finalizer_cls_name.attach(this, _ptr, detach: this);
+                }
+            });
         }
-    });
+    }
 
     // For interface objects that are used as error types, generate error handlers
     let is_error_interface = type_helper.get_ci().is_name_used_as_error(obj.name());
@@ -246,6 +267,7 @@ pub fn generate_object(obj: &Object, type_helper: &dyn TypeHelperRenderer) -> da
 
             // Public constructors generated from UDL
             $( for ctor_def in constructor_definitions => $ctor_def )
+            $( for factory_def in async_constructor_factories => $factory_def )
 
             // Factory for lifting pointers
             factory $cls_name.lift(Pointer<Void> ptr) {

@@ -1,7 +1,11 @@
 use crate::gen::CodeType;
 use genco::prelude::*;
+use heck::ToUpperCamelCase;
 use uniffi_bindgen::interface::Type;
-use uniffi_bindgen::interface::{AsType, Method};
+use uniffi_bindgen::interface::{
+    ffi::{FfiStruct, FfiType},
+    AsType, Method,
+};
 
 use crate::gen::oracle::{AsCodeType, DartCodeOracle};
 use crate::gen::render::AsRenderable;
@@ -83,6 +87,42 @@ pub fn generate_callback_interface(
     let ffi_conv_name = &DartCodeOracle::class_name(ffi_converter_name);
     let init_fn_name = &format!("init{callback_name}VTable");
 
+    // TODO: Use global deduplication to avoid generating duplicate async types
+    // when multiple async callback interfaces are defined
+    let mut async_struct_defs: Vec<dart::Tokens> = Vec::new();
+    let mut async_completion_typedefs: Vec<dart::Tokens> = Vec::new();
+
+    for method in methods {
+        if method.is_async() {
+            let struct_def = method.foreign_future_ffi_result_struct();
+            let struct_name = struct_def.name().to_string();
+
+            if !type_helper.include_once_by_name(&struct_name) {
+                async_struct_defs.push(generate_foreign_future_struct_definition(
+                    &struct_def,
+                    type_helper,
+                ));
+            }
+
+            let completion_name = foreign_future_completion_name(method);
+            if !type_helper.include_once_by_name(&completion_name) {
+                async_completion_typedefs.push(generate_foreign_future_completion_typedef(
+                    &completion_name,
+                    &struct_name,
+                ));
+            }
+        }
+    }
+
+    let async_support = if !async_struct_defs.is_empty() || !async_completion_typedefs.is_empty() {
+        quote! {
+            $(for typedef in &async_completion_typedefs => $typedef)
+            $(for struct_def in &async_struct_defs => $struct_def)
+        }
+    } else {
+        quote!()
+    };
+
     let tokens = quote! {
         // This is the abstract class to be implemented
         abstract class $cls_name {
@@ -130,6 +170,9 @@ pub fn generate_callback_interface(
             }
         }
 
+        // Additional support definitions for async callbacks
+        $async_support
+
         // We must define callback signatures
         $(generate_callback_methods_signatures(cls_name, methods, type_helper))
     };
@@ -153,7 +196,14 @@ fn generate_callback_methods_definitions(
         })
         .collect::<Vec<_>>();
 
-    let ret_type = if let Some(ret) = method.return_type() {
+    let ret_type = if method.is_async() {
+        if let Some(ret) = method.return_type() {
+            let rendered = ret.as_renderable().render_type(ret, type_helper);
+            quote!(Future<$rendered>)
+        } else {
+            quote!(Future<void>)
+        }
+    } else if let Some(ret) = method.return_type() {
         ret.as_renderable().render_type(ret, type_helper)
     } else {
         quote!(void)
@@ -174,24 +224,54 @@ fn generate_callback_methods_signatures(
         //let method_name = DartCodeOracle::fn_name(method.name());
 
         let ffi_method_type = format!("UniffiCallbackInterface{callback_name}Method{method_index}");
-
         let dart_method_type =
             format!("UniffiCallbackInterface{callback_name}Method{method_index}Dart");
 
-        let method_return_type = if let Some(ret) = method.return_type() {
-            DartCodeOracle::native_type_label(Some(ret), type_helper.get_ci())
-        } else {
-            quote!(Void)
-        };
+        let arg_native_types: Vec<dart::Tokens> = method
+            .arguments()
+            .iter()
+            .map(|arg| {
+                DartCodeOracle::native_type_label(Some(&arg.as_type()), type_helper.get_ci())
+            })
+            .collect();
 
-        tokens.append(quote! {
-            typedef $ffi_method_type = Void Function(
-                Uint64, $(for arg in &method.arguments() => $(DartCodeOracle::native_type_label(Some(&arg.as_type()), type_helper.get_ci())),)
-                Pointer<$(&method_return_type)>, Pointer<RustCallStatus>);
-            typedef $dart_method_type = void Function(
-                int, $(for arg in &method.arguments() => $(DartCodeOracle::native_dart_type_label(Some(&arg.as_type()), type_helper.get_ci())),)
-                Pointer<$(&method_return_type)>, Pointer<RustCallStatus>);
-        });
+        let arg_dart_types: Vec<dart::Tokens> = method
+            .arguments()
+            .iter()
+            .map(|arg| {
+                DartCodeOracle::native_dart_type_label(Some(&arg.as_type()), type_helper.get_ci())
+            })
+            .collect();
+
+        if method.is_async() {
+            let completion_base = foreign_future_completion_name(method);
+            let completion_native = format!("Uniffi{}", completion_base.to_upper_camel_case());
+            let completion_pointer = format!("Pointer<NativeFunction<{}>>", completion_native);
+
+            tokens.append(quote! {
+                typedef $ffi_method_type = Void Function(
+                    Uint64, $(for arg in &arg_native_types => $arg,)
+                    $(&completion_pointer), Uint64, Pointer<UniffiForeignFuture>);
+                typedef $dart_method_type = void Function(
+                    int, $(for arg in &arg_dart_types => $arg,)
+                    $(&completion_pointer), int, Pointer<UniffiForeignFuture>);
+            });
+        } else {
+            let method_return_type = if let Some(ret) = method.return_type() {
+                DartCodeOracle::native_type_label(Some(ret), type_helper.get_ci())
+            } else {
+                quote!(Void)
+            };
+
+            tokens.append(quote! {
+                typedef $ffi_method_type = Void Function(
+                    Uint64, $(for arg in &arg_native_types => $arg,)
+                    Pointer<$(&method_return_type)>, Pointer<RustCallStatus>);
+                typedef $dart_method_type = void Function(
+                    int, $(for arg in &arg_dart_types => $arg,)
+                    Pointer<$(&method_return_type)>, Pointer<RustCallStatus>);
+            });
+        }
     }
 
     tokens.append(quote! {
@@ -235,51 +315,142 @@ pub fn generate_callback_functions(
         let _dart_method_type = &format!("UniffiCallbackInterface{callback_name}Method{index}Dart");
 
         // Get parameter types using the oracle
-        let param_types: Vec<dart::Tokens> = m.arguments().iter().map(|arg| {
-            let arg_name = DartCodeOracle::var_name(arg.name());
-            DartCodeOracle::callback_param_type(&arg.as_type(), &arg_name, type_helper.get_ci())
-        }).collect();
+        let param_types: Vec<dart::Tokens> = m
+            .arguments()
+            .iter()
+            .map(|arg| {
+                let arg_name = DartCodeOracle::var_name(arg.name());
+                DartCodeOracle::callback_param_type(&arg.as_type(), &arg_name, type_helper.get_ci())
+            })
+            .collect();
 
         // Get argument lifts using the oracle
-        let arg_lifts: Vec<dart::Tokens> = m.arguments().iter().enumerate().map(|(arg_idx, arg)| {
-            let arg_name = DartCodeOracle::var_name(arg.name());
-            DartCodeOracle::callback_arg_lift_indexed(&arg.as_type(), &arg_name, arg_idx)
-        }).collect();
+        let arg_lifts: Vec<dart::Tokens> = m
+            .arguments()
+            .iter()
+            .enumerate()
+            .map(|(arg_idx, arg)| {
+                let arg_name = DartCodeOracle::var_name(arg.name());
+                DartCodeOracle::callback_arg_lift_indexed(&arg.as_type(), &arg_name, arg_idx)
+            })
+            .collect();
 
         // Prepare arg names for the method call using indexes
-        let arg_names: Vec<dart::Tokens> = m.arguments().iter().enumerate().map(|(arg_idx, arg)| {
-            DartCodeOracle::callback_arg_name(&arg.as_type(), arg_idx)
-        }).collect();
-
-        // Handle return value using the oracle
-        let call_dart_method = if let Some(ret) = m.return_type() {
-            DartCodeOracle::callback_return_handling(ret, method_name, arg_names)
-        } else {
-            // Handle void return types
-            DartCodeOracle::callback_void_handling(method_name, arg_names)
-        };
-
-        // Get the appropriate out return type
-        let out_return_type = DartCodeOracle::callback_out_return_type(m.return_type());
+        let arg_names: Vec<dart::Tokens> = m
+            .arguments()
+            .iter()
+            .enumerate()
+            .map(|(arg_idx, arg)| DartCodeOracle::callback_arg_name(&arg.as_type(), arg_idx))
+            .collect();
 
         // Generate the function body
-        let callback_method_name = &format!("{}{}", &DartCodeOracle::fn_name(callback_name), &DartCodeOracle::class_name(m.name()));
+        let callback_method_name =
+            &format!("{}{}", &DartCodeOracle::fn_name(callback_name), &DartCodeOracle::class_name(m.name()));
 
-        quote! {
-            void $callback_method_name(int uniffiHandle, $(for param in &param_types => $param,) $out_return_type outReturn, Pointer<RustCallStatus> callStatus) {
-                final status = callStatus.ref;
-                try {
-                    final obj = FfiConverterCallbackInterface$cls_name._handleMap.get(uniffiHandle);
-                    $(arg_lifts)
-                    $call_dart_method
-                } catch (e) {
-                    status.code = CALL_UNEXPECTED_ERROR;
-                    status.errorBuf = FfiConverterString.lower(e.toString());
-                }
+        if m.is_async() {
+            let completion_base = foreign_future_completion_name(m);
+            let completion_native = format!("Uniffi{}", completion_base.to_upper_camel_case());
+            let completion_pointer = format!("Pointer<NativeFunction<{}>>", completion_native);
+            let completion_dart = format!("{completion_native}Dart");
+            let result_struct = m.foreign_future_ffi_result_struct();
+            let struct_tokens = DartCodeOracle::ffi_struct_name(result_struct.name());
+            let struct_tokens_alt = struct_tokens.clone();
+
+            if let Some(ret) = m.return_type() {
+                type_helper.include_once_check(&ret.as_codetype().canonical_name(), ret);
             }
 
-            final Pointer<NativeFunction<$ffi_method_type>> $(callback_method_name)Pointer =
-                Pointer.fromFunction<$ffi_method_type>($callback_method_name);
+            let success_return = if let Some(ret) = m.return_type() {
+                let converter = ret.as_codetype().ffi_converter_name();
+                quote!(resultStructPtr.ref.returnValue = $(&converter).lower(result);)
+            } else {
+                quote!()
+            };
+
+            quote! {
+                void $callback_method_name(
+                    int uniffiHandle,
+                    $(for param in &param_types => $param,)
+                    $(&completion_pointer) uniffiFutureCallback,
+                    int uniffiCallbackData,
+                    Pointer<UniffiForeignFuture> outReturn,
+                ) {
+                    final obj = FfiConverterCallbackInterface$cls_name._handleMap.get(uniffiHandle);
+                    $(arg_lifts)
+                    final callback = uniffiFutureCallback.asFunction<$(&completion_dart)>();
+                    final state = _UniffiForeignFutureState();
+                    final handle = _uniffiForeignFutureHandleMap.insert(state);
+                    outReturn.ref.handle = handle;
+                    outReturn.ref.free = _uniffiForeignFutureFreePointer;
+
+                    () async {
+                        try {
+                            final result = await obj.$method_name($(for arg in &arg_names => $arg,));
+                            final removedState = _uniffiForeignFutureHandleMap.maybeRemove(handle);
+                            final effectiveState = removedState ?? state;
+                            if (effectiveState.cancelled) {
+                                return;
+                            }
+                            effectiveState.cancelled = true;
+                            final resultStructPtr = calloc<$struct_tokens>();
+                            try {
+                                $success_return
+                                resultStructPtr.ref.callStatus.code = CALL_SUCCESS;
+                                callback(uniffiCallbackData, resultStructPtr.ref);
+                            } finally {
+                                calloc.free(resultStructPtr);
+                            }
+                        } catch (e) {
+                            final removedState = _uniffiForeignFutureHandleMap.maybeRemove(handle);
+                            final effectiveState = removedState ?? state;
+                            if (effectiveState.cancelled) {
+                                return;
+                            }
+                            effectiveState.cancelled = true;
+                            final resultStructPtr = calloc<$struct_tokens_alt>();
+                            try {
+                                resultStructPtr.ref.callStatus.code = CALL_UNEXPECTED_ERROR;
+                                resultStructPtr.ref.callStatus.errorBuf =
+                                    FfiConverterString.lower(e.toString());
+                                callback(uniffiCallbackData, resultStructPtr.ref);
+                            } finally {
+                                calloc.free(resultStructPtr);
+                            }
+                        }
+                    }();
+                }
+
+                final Pointer<NativeFunction<$ffi_method_type>> $(callback_method_name)Pointer =
+                    Pointer.fromFunction<$ffi_method_type>($callback_method_name);
+            }
+        } else {
+            // Handle return value using the oracle
+            let call_dart_method = if let Some(ret) = m.return_type() {
+                DartCodeOracle::callback_return_handling(ret, method_name, arg_names)
+            } else {
+                // Handle void return types
+                DartCodeOracle::callback_void_handling(method_name, arg_names)
+            };
+
+            // Get the appropriate out return type
+            let out_return_type = DartCodeOracle::callback_out_return_type(m.return_type());
+
+            quote! {
+                void $callback_method_name(int uniffiHandle, $(for param in &param_types => $param,) $out_return_type outReturn, Pointer<RustCallStatus> callStatus) {
+                    final status = callStatus.ref;
+                    try {
+                        final obj = FfiConverterCallbackInterface$cls_name._handleMap.get(uniffiHandle);
+                        $(arg_lifts)
+                        $call_dart_method
+                    } catch (e) {
+                        status.code = CALL_UNEXPECTED_ERROR;
+                        status.errorBuf = FfiConverterString.lower(e.toString());
+                    }
+                }
+
+                final Pointer<NativeFunction<$ffi_method_type>> $(callback_method_name)Pointer =
+                    Pointer.fromFunction<$ffi_method_type>($callback_method_name);
+            }
         }
     }).collect();
 
@@ -320,6 +491,80 @@ pub fn generate_callback_functions(
 
         final Pointer<NativeFunction<$clone_callback_type>> $clone_callback_pointer =
             Pointer.fromFunction<$clone_callback_type>($clone_callback_fn, 0);
+    }
+}
+
+fn generate_foreign_future_struct_definition(
+    ffi_struct: &FfiStruct,
+    type_helper: &dyn TypeHelperRenderer,
+) -> dart::Tokens {
+    let struct_name = DartCodeOracle::ffi_struct_name(ffi_struct.name());
+    let fields: Vec<dart::Tokens> = ffi_struct
+        .fields()
+        .iter()
+        .map(|field| {
+            let field_name = DartCodeOracle::var_name(field.name());
+            let ffi_field_type = field.type_();
+            let field_type = match &ffi_field_type {
+                FfiType::RustCallStatus => quote!(RustCallStatus),
+                _ => {
+                    DartCodeOracle::ffi_dart_type_label(Some(&ffi_field_type), type_helper.get_ci())
+                }
+            };
+            if let Some(annotation) = foreign_future_field_annotation(&ffi_field_type) {
+                quote! {
+                    $annotation
+                    external $field_type $field_name;
+                }
+            } else {
+                quote! {
+                    external $field_type $field_name;
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        final class $struct_name extends Struct {
+            $(for field in fields => $field)
+        }
+    }
+}
+
+fn generate_foreign_future_completion_typedef(
+    callback_base: &str,
+    struct_name: &str,
+) -> dart::Tokens {
+    let native_callback_name = format!("Uniffi{}", callback_base.to_upper_camel_case());
+    let dart_callback_name = format!("{native_callback_name}Dart");
+    let struct_tokens = DartCodeOracle::ffi_struct_name(struct_name);
+    let struct_tokens_alt = struct_tokens.clone();
+
+    let mut tokens = dart::Tokens::new();
+    tokens.append(quote!(typedef $native_callback_name = Void Function(Uint64, $struct_tokens);));
+    tokens.append(quote!(typedef $dart_callback_name = void Function(int, $struct_tokens_alt);));
+    tokens
+}
+
+fn foreign_future_completion_name(method: &Method) -> String {
+    let return_ffi_type = method.return_type().cloned().map(FfiType::from);
+    let suffix = FfiType::return_type_name(return_ffi_type.as_ref()).to_upper_camel_case();
+    format!("ForeignFutureComplete{suffix}")
+}
+
+fn foreign_future_field_annotation(field_type: &FfiType) -> Option<dart::Tokens> {
+    match field_type {
+        FfiType::Int8 => Some(quote!(@Int8())),
+        FfiType::UInt8 => Some(quote!(@Uint8())),
+        FfiType::Int16 => Some(quote!(@Int16())),
+        FfiType::UInt16 => Some(quote!(@Uint16())),
+        FfiType::Int32 => Some(quote!(@Int32())),
+        FfiType::UInt32 => Some(quote!(@Uint32())),
+        FfiType::Int64 => Some(quote!(@Int64())),
+        FfiType::UInt64 => Some(quote!(@Uint64())),
+        FfiType::Float32 => Some(quote!(@Float())),
+        FfiType::Float64 => Some(quote!(@Double())),
+        _ => None,
     }
 }
 

@@ -12,6 +12,9 @@ pub trait TypeHelperRenderer {
     fn get_ci(&self) -> &ComponentInterface;
     fn include_once_check(&self, name: &str, ty: &Type) -> bool;
     fn check(&self, name: &str) -> bool;
+    /// Marks a name as included and returns true if it was already present (should skip generation).
+    /// Use this for types that don't have a corresponding Type enum variant.
+    fn include_once_by_name(&self, name: &str) -> bool;
 
     fn get_object(&self, name: &str) -> Option<&Object>;
     fn get_enum(&self, name: &str) -> Option<&Enum>;
